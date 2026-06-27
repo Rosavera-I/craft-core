@@ -14,6 +14,7 @@ This repository currently provides:
 - GitHub harness installation into `~/.craft/harnesses`.
 - A persistent SQLite harness registry at `~/.craft/registry.sqlite3`.
 - `craft compose` output that merges prompt, memory, MCP tool, and validator artifacts with ordered conflict warnings.
+- `craft validate` and `craft harness test <name>` for manifest checks plus `tdd-dsl` validator execution.
 - A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
 - CI for format, clippy, and tests.
 
@@ -53,6 +54,21 @@ craft harness list
 craft harness info godot-designer
 craft harness uninstall godot-designer
 ```
+
+Validate a local harness project:
+
+```sh
+craft validate
+craft validate path/to/harness
+```
+
+Run validators for an installed harness:
+
+```sh
+craft harness test godot-designer
+```
+
+Validation first checks `craft.toml` and referenced artifacts. If `validators/checks.tdd` contains non-comment checks, CRAFT runs `tdd-dsl` from `PATH`; if that binary is not available, it tries `python -m tdd_dsl`.
 
 Compose multiple installed harnesses into a generated config:
 

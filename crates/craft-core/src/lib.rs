@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use craft_manifest::{Manifest, ManifestError, load_manifest};
 
@@ -133,6 +133,14 @@ pub struct InstallResult {
 pub struct ComposeResult {
     pub output_path: PathBuf,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationResult {
+    pub harness_name: String,
+    pub tdd_path: PathBuf,
+    pub checks_run: bool,
+    pub runner: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +416,134 @@ pub fn compose_harnesses(
         output_path,
         warnings,
     })
+}
+
+pub fn validate_harness_project(root: impl AsRef<Path>) -> Result<ValidationResult, CraftError> {
+    let project = HarnessProject::load(root.as_ref())?;
+    run_tdd_validators(project.root(), project.manifest())
+}
+
+pub fn test_installed_harness(
+    registry: &HarnessRegistry,
+    name: &str,
+) -> Result<ValidationResult, CraftError> {
+    let installed = registry.info(name)?;
+    validate_harness_project(installed.path)
+}
+
+fn run_tdd_validators(root: &Path, manifest: &Manifest) -> Result<ValidationResult, CraftError> {
+    let tdd_path = root.join(&manifest.validators.tdd);
+    let contents = fs::read_to_string(&tdd_path)
+        .map_err(|err| CraftError::Io(format!("failed to read {}: {err}", tdd_path.display())))?;
+    if tdd_is_empty(&contents) {
+        return Ok(ValidationResult {
+            harness_name: manifest.harness.name.clone(),
+            tdd_path,
+            checks_run: false,
+            runner: None,
+        });
+    }
+
+    let runner = TddRunner::detect()?;
+    runner.run(&tdd_path, root)?;
+    Ok(ValidationResult {
+        harness_name: manifest.harness.name.clone(),
+        tdd_path,
+        checks_run: true,
+        runner: Some(runner.label()),
+    })
+}
+
+fn tdd_is_empty(contents: &str) -> bool {
+    contents.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with('#')
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TddRunner {
+    Binary(PathBuf),
+    PythonModule(String),
+}
+
+impl TddRunner {
+    fn detect() -> Result<Self, CraftError> {
+        if let Some(path) = find_on_path("tdd-dsl") {
+            return Ok(Self::Binary(path));
+        }
+
+        let python = find_on_path("python").or_else(|| find_on_path("python3"));
+        if let Some(python) = python {
+            let output = Command::new(&python)
+                .arg("-m")
+                .arg("tdd_dsl")
+                .arg("--help")
+                .output();
+            if matches!(output, Ok(output) if output.status.success()) {
+                return Ok(Self::PythonModule(python.to_string_lossy().to_string()));
+            }
+        }
+
+        Err(CraftError::CommandFailed(
+            "TDD validators require `tdd-dsl` on PATH or `python -m tdd_dsl`".to_string(),
+        ))
+    }
+
+    fn run(&self, tdd_path: &Path, cwd: &Path) -> Result<(), CraftError> {
+        let output = match self {
+            Self::Binary(binary) => Command::new(binary).arg(tdd_path).current_dir(cwd).output(),
+            Self::PythonModule(python) => Command::new(python)
+                .arg("-m")
+                .arg("tdd_dsl")
+                .arg(tdd_path)
+                .current_dir(cwd)
+                .output(),
+        }
+        .map_err(|err| {
+            CraftError::CommandFailed(format!("failed to run {}: {err}", self.label()))
+        })?;
+
+        command_output_result(&self.label(), output)
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Binary(binary) => binary.to_string_lossy().to_string(),
+            Self::PythonModule(python) => format!("{python} -m tdd_dsl"),
+        }
+    }
+}
+
+fn find_on_path(binary: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path).find_map(|directory| {
+        let candidate = directory.join(binary);
+        if candidate.is_file() {
+            Some(candidate)
+        } else {
+            None
+        }
+    })
+}
+
+fn command_output_result(label: &str, output: Output) -> Result<(), CraftError> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let details = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    Err(CraftError::CommandFailed(format!(
+        "{label} failed{}{}",
+        if details.is_empty() { "" } else { ": " },
+        details
+    )))
 }
 
 fn read_harness_artifact(root: &Path, relative_path: &Path) -> Result<String, CraftError> {

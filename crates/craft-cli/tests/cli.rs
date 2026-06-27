@@ -1,4 +1,6 @@
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -91,6 +93,90 @@ fn compose_command_writes_compose_file() {
     assert!(contents.contains("[memory.schemas]"));
     assert!(contents.contains("[tools.mcp]"));
     assert!(contents.contains("[validators.tdd]"));
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
+fn validate_accepts_initialized_project_without_checks() {
+    let root = temp_root("craft-cli-validate-empty");
+    let init = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("init")
+        .arg(&root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let validate = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("validate")
+        .arg(&root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        validate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&validate.stdout);
+    assert!(stdout.contains("validated starter-harness"));
+    assert!(stdout.contains("tdd: skipped"));
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
+fn validate_runs_tdd_dsl_when_checks_exist() {
+    let root = temp_root("craft-cli-validate-tdd");
+    create_harness(&root, "godot-designer");
+    let bin_dir = fake_tdd_dsl_bin(&root);
+
+    let validate = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("validate")
+        .arg(&root)
+        .env("PATH", path_with_prefix(&bin_dir))
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        validate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&validate.stdout);
+    assert!(stdout.contains("validated godot-designer"));
+    assert!(stdout.contains("tdd: ok"));
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
+fn harness_test_runs_installed_harness_tdd_checks() {
+    let root = temp_root("craft-cli-harness-test");
+    let craft_home = root.join(".craft");
+    let harness_root = craft_home.join("harnesses/godot-designer");
+    create_harness(&harness_root, "godot-designer");
+    seed_registry(&craft_home, "godot-designer", &harness_root);
+    let bin_dir = fake_tdd_dsl_bin(&root);
+
+    let test = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("harness")
+        .arg("test")
+        .arg("godot-designer")
+        .env("CRAFT_HOME", &craft_home)
+        .env("PATH", path_with_prefix(&bin_dir))
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        test.status.success(),
+        "{}",
+        String::from_utf8_lossy(&test.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&test.stdout);
+    assert!(stdout.contains("validated godot-designer"));
+    assert!(stdout.contains("tdd: ok"));
 
     fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
 }
@@ -203,6 +289,31 @@ fn temp_root(prefix: &str) -> PathBuf {
         .unwrap_or_else(|err| panic!("{err}"))
         .as_nanos();
     std::env::temp_dir().join(format!("{prefix}-{unique}"))
+}
+
+fn fake_tdd_dsl_bin(root: &Path) -> PathBuf {
+    let bin_dir = root.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap_or_else(|err| panic!("{err}"));
+    let binary = bin_dir.join("tdd-dsl");
+    fs::write(
+        &binary,
+        "#!/usr/bin/env sh\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"--help\" ]; then exit 0; fi\ntest -f \"$1\"\n",
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let mut permissions = fs::metadata(&binary)
+        .unwrap_or_else(|err| panic!("{err}"))
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&binary, permissions).unwrap_or_else(|err| panic!("{err}"));
+    bin_dir
+}
+
+fn path_with_prefix(prefix: &Path) -> OsString {
+    let mut paths = vec![prefix.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).unwrap_or_else(|err| panic!("{err}"))
 }
 
 fn create_harness(root: &Path, name: &str) {

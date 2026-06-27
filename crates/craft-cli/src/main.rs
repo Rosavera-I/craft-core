@@ -4,7 +4,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use craft_core::{CraftHome, GithubSource, HarnessManager, compose_harnesses};
+use craft_core::{
+    CraftHome, GithubSource, HarnessManager, ValidationResult, compose_harnesses,
+    test_installed_harness, validate_harness_project,
+};
 use craft_memory::{Memory, MemoryScope};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -42,6 +45,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         Some("harness") => harness_command(&args[1..]),
         Some("compose") => compose_command(&args[1..]),
+        Some("validate") => validate_command(&args[1..]),
         Some("memory") => memory_command(&args[1..]),
         Some(command) => Err(format!(
             "unknown command `{command}`\n\nRun `craft --help`."
@@ -60,8 +64,10 @@ Usage:
   craft harness install github:owner/repo[@ref]
   craft harness list
   craft harness info <name>
+  craft harness test <name>
   craft harness uninstall <name>
   craft compose <harness> [harness...] [-o craft.compose.toml]
+  craft validate [path]   Validate a harness manifest and TDD checks
   craft memory log <scope> <key> <value>
   craft memory recall <scope> <key>
   craft memory record --scope <scope> --key <key> --value <value>
@@ -191,6 +197,15 @@ fn harness_command(args: &[String]) -> Result<(), String> {
             println!("path: {}", harness.path.display());
             Ok(())
         }
+        Some("test") => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| "usage: craft harness test <name>".to_string())?;
+            let registry = manager.registry().map_err(|err| err.to_string())?;
+            let result = test_installed_harness(&registry, name).map_err(|err| err.to_string())?;
+            print_validation_result(&result);
+            Ok(())
+        }
         Some("uninstall") => {
             let name = args
                 .get(1)
@@ -202,7 +217,28 @@ fn harness_command(args: &[String]) -> Result<(), String> {
             println!("uninstalled {}", harness.name);
             Ok(())
         }
-        _ => Err("usage: craft harness <install|list|info|uninstall>".to_string()),
+        _ => Err("usage: craft harness <install|list|info|test|uninstall>".to_string()),
+    }
+}
+
+fn validate_command(args: &[String]) -> Result<(), String> {
+    let root = args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let result = validate_harness_project(root).map_err(|err| err.to_string())?;
+    print_validation_result(&result);
+    Ok(())
+}
+
+fn print_validation_result(result: &ValidationResult) {
+    println!("validated {}", result.harness_name);
+    println!("manifest: ok");
+    if result.checks_run {
+        let runner = result.runner.as_deref().unwrap_or("tdd-dsl");
+        println!("tdd: ok ({runner}) {}", result.tdd_path.display());
+    } else {
+        println!("tdd: skipped (no checks) {}", result.tdd_path.display());
     }
 }
 
