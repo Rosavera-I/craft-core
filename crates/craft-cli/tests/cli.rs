@@ -90,6 +90,67 @@ fn compose_command_writes_compose_file() {
     fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
 }
 
+#[test]
+fn memory_commands_record_and_inspect_facts() {
+    let root = temp_root("craft-cli-memory");
+
+    let record = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("memory")
+        .arg("record")
+        .arg("--scope")
+        .arg("project")
+        .arg("--key")
+        .arg("language")
+        .arg("--value")
+        .arg("rust")
+        .env("CRAFT_HOME", &root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        record.status.success(),
+        "{}",
+        String::from_utf8_lossy(&record.stderr)
+    );
+    assert!(String::from_utf8_lossy(&record.stdout).contains("recorded project"));
+
+    let inspect = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("memory")
+        .arg("inspect")
+        .arg("--scope")
+        .arg("project")
+        .env("CRAFT_HOME", &root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    assert!(String::from_utf8_lossy(&inspect.stdout).contains("project\tlanguage\trust"));
+
+    let search = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("memory")
+        .arg("search")
+        .arg("--query")
+        .arg("rust")
+        .arg("--scope")
+        .arg("project")
+        .env("CRAFT_HOME", &root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        search.status.success(),
+        "{}",
+        String::from_utf8_lossy(&search.stderr)
+    );
+    assert!(String::from_utf8_lossy(&search.stdout).contains("project\tlanguage\trust"));
+
+    assert!(root.join("memory.sqlite3").is_file());
+    assert!(root.join("logs").is_dir());
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
 fn temp_root(prefix: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

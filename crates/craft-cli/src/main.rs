@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use craft_core::{CraftHome, GithubSource, HarnessManager, compose_harnesses};
+use craft_memory::{Memory, MemoryScope};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -41,6 +42,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         Some("harness") => harness_command(&args[1..]),
         Some("compose") => compose_command(&args[1..]),
+        Some("memory") => memory_command(&args[1..]),
         Some(command) => Err(format!(
             "unknown command `{command}`\n\nRun `craft --help`."
         )),
@@ -60,6 +62,10 @@ Usage:
   craft harness info <name>
   craft harness uninstall <name>
   craft compose <harness> [harness...] [-o craft.compose.toml]
+  craft memory record --scope <scope> --key <key> --value <value>
+  craft memory inspect --scope <scope>
+  craft memory search --query <query> [--scope <scope>...]
+  craft memory context --query <query> [--tokens 1200] [--scope <scope>...]
   craft version          Print version
   craft --help           Print help
 "
@@ -232,6 +238,117 @@ fn compose_command(args: &[String]) -> Result<(), String> {
     }
     println!("wrote {}", result.output_path.display());
     Ok(())
+}
+
+fn memory_command(args: &[String]) -> Result<(), String> {
+    let memory = Memory::from_env().map_err(|err| err.to_string())?;
+    match args.first().map(String::as_str) {
+        Some("record") => {
+            let scope = required_flag(args, "--scope")?;
+            let key = required_flag(args, "--key")?;
+            let value = required_flag(args, "--value")?;
+            let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
+            let fact = memory
+                .record(scope, &key, &value)
+                .map_err(|err| err.to_string())?;
+            println!("recorded {}\t{}\t{}", fact.scope, fact.key, fact.value);
+            Ok(())
+        }
+        Some("inspect") => {
+            let scope = required_flag(args, "--scope")?;
+            let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
+            print_facts(memory.inspect(&scope).map_err(|err| err.to_string())?);
+            Ok(())
+        }
+        Some("recall") => {
+            let scope = required_flag(args, "--scope")?;
+            let query = required_flag(args, "--query")?;
+            let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
+            print_facts(
+                memory
+                    .recall(&scope, &query)
+                    .map_err(|err| err.to_string())?,
+            );
+            Ok(())
+        }
+        Some("search") => {
+            let query = required_flag(args, "--query")?;
+            let scopes = scope_flags(args)?;
+            print_facts(
+                memory
+                    .search(&query, &scopes)
+                    .map_err(|err| err.to_string())?,
+            );
+            Ok(())
+        }
+        Some("context") => {
+            let query = optional_flag(args, "--query").unwrap_or_default();
+            let tokens = optional_flag(args, "--tokens")
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "craft memory context --tokens must be a number".to_string())
+                })
+                .transpose()?
+                .unwrap_or(1200);
+            let mut scopes = scope_flags(args)?;
+            if scopes.is_empty() {
+                scopes = vec![
+                    MemoryScope::Global,
+                    MemoryScope::User,
+                    MemoryScope::Project,
+                    MemoryScope::Session,
+                ];
+            }
+            let items = memory
+                .assemble_context(&scopes, query, tokens)
+                .map_err(|err| err.to_string())?;
+            for item in items {
+                println!("{}\t{}\t{}", item.scope, item.key, item.value);
+            }
+            Ok(())
+        }
+        _ => {
+            Err("usage: craft memory <record|inspect|recall|search|context> [options]".to_string())
+        }
+    }
+}
+
+fn required_flag(args: &[String], name: &str) -> Result<String, String> {
+    optional_flag(args, name).ok_or_else(|| format!("{name} is required"))
+}
+
+fn optional_flag(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find(|window| window[0] == name)
+        .map(|window| window[1].clone())
+}
+
+fn scope_flags(args: &[String]) -> Result<Vec<MemoryScope>, String> {
+    let mut scopes = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--scope" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| "--scope requires a value".to_string())?;
+            scopes.push(MemoryScope::parse(value).map_err(|err| err.to_string())?);
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(scopes)
+}
+
+fn print_facts(facts: Vec<craft_memory::MemoryFact>) {
+    if facts.is_empty() {
+        println!("no memory facts found");
+    } else {
+        for fact in facts {
+            println!("{}\t{}\t{}", fact.scope, fact.key, fact.value);
+        }
+    }
 }
 
 fn probe_version(binary: &str, arg: &str) -> String {
