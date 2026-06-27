@@ -13,7 +13,7 @@ This repository currently provides:
 - A `craft.toml` manifest parser and validator.
 - GitHub harness installation into `~/.craft/harnesses`.
 - A persistent SQLite harness registry at `~/.craft/registry.sqlite3`.
-- Basic `craft compose` output with last-write-wins conflict warnings.
+- `craft compose` output that merges prompt, memory, MCP tool, and validator artifacts with ordered conflict warnings.
 - A scoped memory API stub that establishes the interface for later persistence.
 - CI for format, clippy, and tests.
 
@@ -59,6 +59,29 @@ Compose multiple installed harnesses into a generated config:
 ```sh
 craft compose godot-designer roguelike-specialist -o craft.compose.toml
 ```
+
+The generated `craft.compose.toml` includes harness metadata plus merged artifacts:
+
+```toml
+[compose]
+strategy = "ordered-merge"
+harnesses = ["godot-designer", "roguelike-specialist"]
+
+[prompts]
+system = "# Harness: godot-designer\n\n...\n\n# Harness: roguelike-specialist\n\n...\n"
+
+[memory.schemas]
+"godot-designer" = "[facts]\n...\n"
+"roguelike-specialist" = "[facts]\n...\n"
+
+[tools.mcp]
+"godot-designer" = "[[server]]\n...\n"
+
+[validators.tdd]
+"godot-designer" = "check ...\n"
+```
+
+Prompts are concatenated in command order. Memory schemas, MCP bindings, and TDD validators are namespaced by harness name so a runner can consume each artifact without losing source ownership.
 
 The registry uses SQLite. This dependency-light milestone calls the `sqlite3` CLI so the workspace remains buildable offline; the API is shaped so a future `rusqlite` backend can replace it without changing CLI behavior.
 

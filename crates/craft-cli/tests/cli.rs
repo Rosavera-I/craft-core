@@ -86,6 +86,11 @@ fn compose_command_writes_compose_file() {
     );
     let contents = fs::read_to_string(output_path).unwrap_or_else(|err| panic!("{err}"));
     assert!(contents.contains("harnesses = [\"godot-designer\"]"));
+    assert!(contents.contains("[prompts]"));
+    assert!(contents.contains("System prompt for godot-designer"));
+    assert!(contents.contains("[memory.schemas]"));
+    assert!(contents.contains("[tools.mcp]"));
+    assert!(contents.contains("[validators.tdd]"));
 
     fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
 }
@@ -164,10 +169,26 @@ fn create_harness(root: &Path, name: &str) {
     fs::create_dir_all(root.join("memory")).unwrap_or_else(|err| panic!("{err}"));
     fs::create_dir_all(root.join("tools")).unwrap_or_else(|err| panic!("{err}"));
     fs::create_dir_all(root.join("validators")).unwrap_or_else(|err| panic!("{err}"));
-    fs::write(root.join("prompts/system.md"), "").unwrap_or_else(|err| panic!("{err}"));
-    fs::write(root.join("memory/schema.toml"), "").unwrap_or_else(|err| panic!("{err}"));
-    fs::write(root.join("tools/mcp.toml"), "").unwrap_or_else(|err| panic!("{err}"));
-    fs::write(root.join("validators/checks.tdd"), "").unwrap_or_else(|err| panic!("{err}"));
+    fs::write(
+        root.join("prompts/system.md"),
+        format!("System prompt for {name}\n"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    fs::write(
+        root.join("memory/schema.toml"),
+        format!("[facts]\nowner = \"{name}\"\n"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    fs::write(
+        root.join("tools/mcp.toml"),
+        format!("[[server]]\nname = \"{name}-tools\"\n"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    fs::write(
+        root.join("validators/checks.tdd"),
+        format!("check {name}\n"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
     fs::write(
         root.join("craft.toml"),
         format!(
