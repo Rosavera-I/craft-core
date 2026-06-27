@@ -14,7 +14,7 @@ This repository currently provides:
 - GitHub harness installation into `~/.craft/harnesses`.
 - A persistent SQLite harness registry at `~/.craft/registry.sqlite3`.
 - `craft compose` output that merges prompt, memory, MCP tool, and validator artifacts with ordered conflict warnings.
-- A scoped memory API stub that establishes the interface for later persistence.
+- A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
 - CI for format, clippy, and tests.
 
 ## Quickstart
@@ -84,6 +84,26 @@ system = "# Harness: godot-designer\n\n...\n\n# Harness: roguelike-specialist\n\
 Prompts are concatenated in command order. Memory schemas, MCP bindings, and TDD validators are namespaced by harness name so a runner can consume each artifact without losing source ownership.
 
 The registry uses SQLite. This dependency-light milestone calls the `sqlite3` CLI so the workspace remains buildable offline; the API is shaped so a future `rusqlite` backend can replace it without changing CLI behavior.
+
+## Memory Store
+
+Record and recall scoped facts:
+
+```sh
+craft memory log project language rust
+craft memory recall project language
+```
+
+The longer flag-based commands remain available for search-style recall and inspection:
+
+```sh
+craft memory record --scope project --key language --value rust
+craft memory recall --scope project --query rust
+craft memory inspect --scope project
+craft memory search --query rust --scope project
+```
+
+Memory persists in SQLite under `CRAFT_HOME` or `~/.craft`, and each recorded fact also appends a replayable `fact.recorded` event to the database and JSONL log stream.
 
 ## Manifest Shape
 

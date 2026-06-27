@@ -156,6 +156,47 @@ fn memory_commands_record_and_inspect_facts() {
     fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
 }
 
+#[test]
+fn memory_log_and_positional_recall_persist_across_processes() {
+    let root = temp_root("craft-cli-memory-log");
+
+    let log = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("memory")
+        .arg("log")
+        .arg("project")
+        .arg("runtime")
+        .arg("sqlite")
+        .env("CRAFT_HOME", &root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        log.status.success(),
+        "{}",
+        String::from_utf8_lossy(&log.stderr)
+    );
+    assert!(String::from_utf8_lossy(&log.stdout).contains("recorded project"));
+
+    let recall = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("memory")
+        .arg("recall")
+        .arg("project")
+        .arg("runtime")
+        .env("CRAFT_HOME", &root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        recall.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recall.stderr)
+    );
+    assert!(String::from_utf8_lossy(&recall.stdout).contains("project\truntime\tsqlite"));
+
+    assert!(root.join("memory.sqlite3").is_file());
+    assert!(root.join("logs").is_dir());
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
 fn temp_root(prefix: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

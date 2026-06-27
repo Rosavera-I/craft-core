@@ -74,11 +74,43 @@ pub struct MemoryFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryEvent {
+    pub scope: MemoryScope,
+    pub event_type: String,
+    pub payload: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextItem {
     pub scope: MemoryScope,
     pub key: String,
     pub value: String,
     pub score: i64,
+}
+
+pub trait MemoryStore {
+    fn save_fact(
+        &self,
+        scope: MemoryScope,
+        key: impl AsRef<str>,
+        value: impl AsRef<str>,
+    ) -> Result<MemoryFact, MemoryError>;
+
+    fn recall(
+        &self,
+        scope: &MemoryScope,
+        key: impl AsRef<str>,
+    ) -> Result<Option<MemoryFact>, MemoryError>;
+
+    fn append_event(
+        &self,
+        scope: &MemoryScope,
+        event_type: impl AsRef<str>,
+        payload: impl AsRef<str>,
+    ) -> Result<MemoryEvent, MemoryError>;
+
+    fn replay_events(&self, scope: &MemoryScope) -> Result<Vec<MemoryEvent>, MemoryError>;
 }
 
 #[derive(Debug, Clone)]
@@ -118,36 +150,7 @@ impl Memory {
         key: impl AsRef<str>,
         value: impl AsRef<str>,
     ) -> Result<MemoryFact, MemoryError> {
-        let key = key.as_ref();
-        let value = value.as_ref();
-        validate_key(key)?;
-        let now = unix_timestamp()?;
-        let scope_key = scope.storage_key();
-        let sql = format!(
-            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES ({scope}, {kind}, {now});
-             INSERT INTO facts (scope, key, value, created_at) VALUES ({scope}, {key}, {value}, {now});
-             INSERT INTO facts_fts (rowid, scope, key, value) VALUES (last_insert_rowid(), {scope}, {key}, {value});
-             INSERT INTO events (scope, event_type, payload, created_at) VALUES ({scope}, 'fact.recorded', {payload}, {now});
-             INSERT INTO audit_log (action, scope, key, created_at) VALUES ('memory.record', {scope}, {key}, {now});",
-            scope = sql_string(&scope_key),
-            kind = sql_string(scope_kind(&scope)),
-            key = sql_string(key),
-            value = sql_string(value),
-            payload = sql_string(&format!(
-                "{{\"key\":{},\"value\":{}}}",
-                json_string(key),
-                json_string(value)
-            )),
-        );
-        self.exec(&sql)?;
-        self.append_event(&scope, "fact.recorded", key, value)?;
-        self.rotate_logs()?;
-        Ok(MemoryFact {
-            scope,
-            key: key.to_string(),
-            value: value.to_string(),
-            created_at: now,
-        })
+        self.save_fact(scope, key, value)
     }
 
     pub fn recall(
@@ -167,6 +170,27 @@ impl Memory {
             sql_string(&like),
         );
         self.query_facts(&sql)
+    }
+
+    pub fn recall_key(
+        &self,
+        scope: &MemoryScope,
+        key: impl AsRef<str>,
+    ) -> Result<Option<MemoryFact>, MemoryError> {
+        <Self as MemoryStore>::recall(self, scope, key)
+    }
+
+    pub fn events(&self, scope: &MemoryScope) -> Result<Vec<MemoryEvent>, MemoryError> {
+        self.replay_events(scope)
+    }
+
+    pub fn log_event(
+        &self,
+        scope: &MemoryScope,
+        event_type: impl AsRef<str>,
+        payload: impl AsRef<str>,
+    ) -> Result<MemoryEvent, MemoryError> {
+        <Self as MemoryStore>::append_event(self, scope, event_type, payload)
     }
 
     pub fn search(
@@ -305,24 +329,23 @@ impl Memory {
         )
     }
 
-    fn append_event(
+    fn append_jsonl_event(
         &self,
         scope: &MemoryScope,
         event_type: &str,
-        key: &str,
-        value: &str,
+        payload: &str,
+        timestamp: i64,
     ) -> Result<(), MemoryError> {
         let date = current_date();
         let path = self.home.join("logs").join(format!("events-{date}.jsonl"));
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         writeln!(
             file,
-            "{{\"timestamp\":{},\"scope\":{},\"event_type\":{},\"payload\":{{\"key\":{},\"value\":{}}}}}",
-            unix_timestamp()?,
+            "{{\"timestamp\":{},\"scope\":{},\"event_type\":{},\"payload\":{}}}",
+            timestamp,
             json_string(&scope.storage_key()),
             json_string(event_type),
-            json_string(key),
-            json_string(value)
+            payload
         )?;
         Ok(())
     }
@@ -396,6 +419,126 @@ impl Memory {
         }
         parse_fact_rows(&String::from_utf8_lossy(&output.stdout))
     }
+
+    fn query_events(&self, sql: &str) -> Result<Vec<MemoryEvent>, MemoryError> {
+        let output = Command::new("sqlite3")
+            .arg("-batch")
+            .arg("-separator")
+            .arg("\t")
+            .arg(&self.db_path)
+            .arg(sql)
+            .output()
+            .map_err(|err| MemoryError::CommandFailed(format!("failed to run sqlite3: {err}")))?;
+        if !output.status.success() {
+            return Err(MemoryError::Storage(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        parse_event_rows(&String::from_utf8_lossy(&output.stdout))
+    }
+}
+
+impl MemoryStore for Memory {
+    fn save_fact(
+        &self,
+        scope: MemoryScope,
+        key: impl AsRef<str>,
+        value: impl AsRef<str>,
+    ) -> Result<MemoryFact, MemoryError> {
+        let key = key.as_ref();
+        let value = value.as_ref();
+        validate_key(key)?;
+        let now = unix_timestamp()?;
+        let scope_key = scope.storage_key();
+        let sql = format!(
+            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES ({scope}, {kind}, {now});
+             INSERT INTO facts (scope, key, value, created_at) VALUES ({scope}, {key}, {value}, {now});
+             INSERT INTO facts_fts (rowid, scope, key, value) VALUES (last_insert_rowid(), {scope}, {key}, {value});
+             INSERT INTO audit_log (action, scope, key, created_at) VALUES ('memory.record', {scope}, {key}, {now});",
+            scope = sql_string(&scope_key),
+            kind = sql_string(scope_kind(&scope)),
+            key = sql_string(key),
+            value = sql_string(value),
+        );
+        self.exec(&sql)?;
+        <Self as MemoryStore>::append_event(
+            self,
+            &scope,
+            "fact.recorded",
+            format!(
+                "{{\"key\":{},\"value\":{}}}",
+                json_string(key),
+                json_string(value)
+            ),
+        )?;
+        self.rotate_logs()?;
+        Ok(MemoryFact {
+            scope,
+            key: key.to_string(),
+            value: value.to_string(),
+            created_at: now,
+        })
+    }
+
+    fn recall(
+        &self,
+        scope: &MemoryScope,
+        key: impl AsRef<str>,
+    ) -> Result<Option<MemoryFact>, MemoryError> {
+        let key = key.as_ref();
+        validate_key(key)?;
+        let sql = format!(
+            "SELECT scope, key, value, created_at
+             FROM facts
+             WHERE scope = {} AND key = {}
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1;",
+            sql_string(&scope.storage_key()),
+            sql_string(key),
+        );
+        Ok(self.query_facts(&sql)?.into_iter().next())
+    }
+
+    fn append_event(
+        &self,
+        scope: &MemoryScope,
+        event_type: impl AsRef<str>,
+        payload: impl AsRef<str>,
+    ) -> Result<MemoryEvent, MemoryError> {
+        let event_type = event_type.as_ref();
+        let payload = payload.as_ref();
+        validate_event_type(event_type)?;
+        validate_json_payload(payload)?;
+        let timestamp = unix_timestamp()?;
+        let sql = format!(
+            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES ({scope}, {kind}, {timestamp});
+             INSERT INTO events (scope, event_type, payload, created_at) VALUES ({scope}, {event_type}, {payload}, {timestamp});
+             INSERT INTO audit_log (action, scope, key, created_at) VALUES ('memory.event', {scope}, {event_type}, {timestamp});",
+            scope = sql_string(&scope.storage_key()),
+            kind = sql_string(scope_kind(scope)),
+            event_type = sql_string(event_type),
+            payload = sql_string(payload),
+        );
+        self.exec(&sql)?;
+        self.append_jsonl_event(scope, event_type, payload, timestamp)?;
+        Ok(MemoryEvent {
+            scope: scope.clone(),
+            event_type: event_type.to_string(),
+            payload: payload.to_string(),
+            timestamp,
+        })
+    }
+
+    fn replay_events(&self, scope: &MemoryScope) -> Result<Vec<MemoryEvent>, MemoryError> {
+        let sql = format!(
+            "SELECT scope, event_type, payload, created_at
+             FROM events
+             WHERE scope = {}
+             ORDER BY created_at DESC, id DESC;",
+            sql_string(&scope.storage_key()),
+        );
+        self.query_events(&sql)
+    }
 }
 
 #[derive(Debug)]
@@ -452,6 +595,27 @@ fn parse_fact_rows(output: &str) -> Result<Vec<MemoryFact>, MemoryError> {
     Ok(facts)
 }
 
+fn parse_event_rows(output: &str) -> Result<Vec<MemoryEvent>, MemoryError> {
+    let mut events = Vec::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let parts = line.split('\t').collect::<Vec<_>>();
+        if parts.len() != 4 {
+            return Err(MemoryError::Storage(format!(
+                "unexpected event row shape: {line}"
+            )));
+        }
+        events.push(MemoryEvent {
+            scope: MemoryScope::parse(parts[0])?,
+            event_type: parts[1].to_string(),
+            payload: parts[2].to_string(),
+            timestamp: parts[3]
+                .parse()
+                .map_err(|_| MemoryError::Storage(format!("invalid timestamp in row: {line}")))?,
+        });
+    }
+    Ok(events)
+}
+
 fn unix_timestamp() -> Result<i64, MemoryError> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -474,6 +638,30 @@ fn validate_key(key: &str) -> Result<(), MemoryError> {
     if key.trim().is_empty() {
         Err(MemoryError::InvalidKey(
             "memory key must not be empty".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_event_type(event_type: &str) -> Result<(), MemoryError> {
+    if event_type.trim().is_empty() {
+        Err(MemoryError::InvalidKey(
+            "memory event type must not be empty".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_json_payload(payload: &str) -> Result<(), MemoryError> {
+    let payload = payload.trim();
+    if payload.is_empty()
+        || !(payload.starts_with('{') && payload.ends_with('}')
+            || payload.starts_with('[') && payload.ends_with(']'))
+    {
+        Err(MemoryError::InvalidKey(
+            "memory event payload must be a JSON object or array string".to_string(),
         ))
     } else {
         Ok(())
@@ -634,6 +822,35 @@ mod tests {
 
         assert!(root.join("memory.sqlite3").is_file());
         assert!(root.join("logs").is_dir());
+
+        fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn store_trait_persists_facts_and_replays_events_after_reopen() {
+        let root = temp_root("craft-memory-store");
+        let memory = Memory::open(&root).unwrap_or_else(|err| panic!("{err}"));
+
+        memory
+            .save_fact(MemoryScope::Project, "runtime", "sqlite")
+            .unwrap_or_else(|err| panic!("{err}"));
+        memory
+            .append_event(&MemoryScope::Project, "memory.checked", "{\"ok\":true}")
+            .unwrap_or_else(|err| panic!("{err}"));
+        drop(memory);
+
+        let reopened = Memory::open(&root).unwrap_or_else(|err| panic!("{err}"));
+        let fact = reopened
+            .recall_key(&MemoryScope::Project, "runtime")
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(fact.map(|fact| fact.value), Some("sqlite".to_string()));
+
+        let events = reopened
+            .replay_events(&MemoryScope::Project)
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert!(events.iter().any(|event| {
+            event.event_type == "memory.checked" && event.payload == "{\"ok\":true}"
+        }));
 
         fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
     }

@@ -62,6 +62,8 @@ Usage:
   craft harness info <name>
   craft harness uninstall <name>
   craft compose <harness> [harness...] [-o craft.compose.toml]
+  craft memory log <scope> <key> <value>
+  craft memory recall <scope> <key>
   craft memory record --scope <scope> --key <key> --value <value>
   craft memory inspect --scope <scope>
   craft memory search --query <query> [--scope <scope>...]
@@ -243,6 +245,17 @@ fn compose_command(args: &[String]) -> Result<(), String> {
 fn memory_command(args: &[String]) -> Result<(), String> {
     let memory = Memory::from_env().map_err(|err| err.to_string())?;
     match args.first().map(String::as_str) {
+        Some("log") => {
+            let scope = positional(args, 1, "usage: craft memory log <scope> <key> <value>")?;
+            let key = positional(args, 2, "usage: craft memory log <scope> <key> <value>")?;
+            let value = positional(args, 3, "usage: craft memory log <scope> <key> <value>")?;
+            let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
+            let fact = memory
+                .record(scope, &key, &value)
+                .map_err(|err| err.to_string())?;
+            println!("recorded {}\t{}\t{}", fact.scope, fact.key, fact.value);
+            Ok(())
+        }
         Some("record") => {
             let scope = required_flag(args, "--scope")?;
             let key = required_flag(args, "--key")?;
@@ -261,14 +274,25 @@ fn memory_command(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("recall") => {
-            let scope = required_flag(args, "--scope")?;
-            let query = required_flag(args, "--query")?;
-            let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
-            print_facts(
-                memory
-                    .recall(&scope, &query)
-                    .map_err(|err| err.to_string())?,
-            );
+            if args.get(1).is_some_and(|value| !value.starts_with('-')) {
+                let scope = positional(args, 1, "usage: craft memory recall <scope> <key>")?;
+                let key = positional(args, 2, "usage: craft memory recall <scope> <key>")?;
+                let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
+                print_optional_fact(
+                    memory
+                        .recall_key(&scope, &key)
+                        .map_err(|err| err.to_string())?,
+                );
+            } else {
+                let scope = required_flag(args, "--scope")?;
+                let query = required_flag(args, "--query")?;
+                let scope = MemoryScope::parse(&scope).map_err(|err| err.to_string())?;
+                print_facts(
+                    memory
+                        .recall(&scope, &query)
+                        .map_err(|err| err.to_string())?,
+                );
+            }
             Ok(())
         }
         Some("search") => {
@@ -308,10 +332,14 @@ fn memory_command(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
-        _ => {
-            Err("usage: craft memory <record|inspect|recall|search|context> [options]".to_string())
-        }
+        _ => Err(
+            "usage: craft memory <log|record|inspect|recall|search|context> [options]".to_string(),
+        ),
     }
+}
+
+fn positional(args: &[String], index: usize, usage: &str) -> Result<String, String> {
+    args.get(index).cloned().ok_or_else(|| usage.to_string())
 }
 
 fn required_flag(args: &[String], name: &str) -> Result<String, String> {
@@ -348,6 +376,13 @@ fn print_facts(facts: Vec<craft_memory::MemoryFact>) {
         for fact in facts {
             println!("{}\t{}\t{}", fact.scope, fact.key, fact.value);
         }
+    }
+}
+
+fn print_optional_fact(fact: Option<craft_memory::MemoryFact>) {
+    match fact {
+        Some(fact) => println!("{}\t{}\t{}", fact.scope, fact.key, fact.value),
+        None => println!("no memory facts found"),
     }
 }
 
