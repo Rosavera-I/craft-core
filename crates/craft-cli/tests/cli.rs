@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use craft_core::{HarnessRegistry, InstalledHarness};
+
 #[test]
 fn version_command_prints_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_craft"))
@@ -472,29 +474,16 @@ tdd = "validators/checks.tdd"
 
 fn seed_registry(craft_home: &Path, name: &str, harness_root: &Path) {
     fs::create_dir_all(craft_home).unwrap_or_else(|err| panic!("{err}"));
-    let db = craft_home.join("registry.sqlite3");
-    let create_status = Command::new("sqlite3")
-        .arg(&db)
-        .arg(
-            "CREATE TABLE harnesses (
-                name TEXT PRIMARY KEY,
-                version TEXT NOT NULL,
-                source TEXT NOT NULL,
-                path TEXT NOT NULL,
-                installed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
-        )
-        .status()
+    let registry =
+        HarnessRegistry::open(craft_home.join("registry.sqlite3")).unwrap_or_else(|err| {
+            panic!("{err}");
+        });
+    registry
+        .upsert(&InstalledHarness {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            source: format!("github:JMoak/{name}"),
+            path: harness_root.to_path_buf(),
+        })
         .unwrap_or_else(|err| panic!("{err}"));
-    assert!(create_status.success());
-
-    let insert_status = Command::new("sqlite3")
-        .arg(&db)
-        .arg(format!(
-            "INSERT INTO harnesses (name, version, source, path) VALUES ('{name}', '0.1.0', 'github:JMoak/{name}', '{}');",
-            harness_root.display()
-        ))
-        .status()
-        .unwrap_or_else(|err| panic!("{err}"));
-    assert!(insert_status.success());
 }

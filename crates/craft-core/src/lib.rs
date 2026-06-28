@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use craft_manifest::{Manifest, ManifestError, load_manifest};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone)]
 pub struct HarnessProject {
@@ -194,6 +195,12 @@ impl From<ManifestError> for CraftError {
     }
 }
 
+impl From<rusqlite::Error> for CraftError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Registry(value.to_string())
+    }
+}
+
 pub struct HarnessManager {
     home: CraftHome,
 }
@@ -257,7 +264,7 @@ impl HarnessRegistry {
         if let Some(parent) = registry.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        registry.exec(
+        registry.connection()?.execute_batch(
             "CREATE TABLE IF NOT EXISTS harnesses (
                 name TEXT PRIMARY KEY,
                 version TEXT NOT NULL,
@@ -270,36 +277,41 @@ impl HarnessRegistry {
     }
 
     pub fn upsert(&self, harness: &InstalledHarness) -> Result<(), CraftError> {
-        let sql = format!(
+        self.connection()?.execute(
             "INSERT INTO harnesses (name, version, source, path)
-             VALUES ({}, {}, {}, {})
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(name) DO UPDATE SET
                 version = excluded.version,
                 source = excluded.source,
                 path = excluded.path,
                 installed_at = CURRENT_TIMESTAMP;",
-            sql_string(&harness.name),
-            sql_string(&harness.version),
-            sql_string(&harness.source),
-            sql_string(&harness.path.to_string_lossy()),
-        );
-        self.exec(&sql)
+            params![
+                harness.name,
+                harness.version,
+                harness.source,
+                harness.path.to_string_lossy()
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn list(&self) -> Result<Vec<InstalledHarness>, CraftError> {
-        let output =
-            self.query("SELECT name, version, source, path FROM harnesses ORDER BY name;")?;
-        parse_registry_rows(&output)
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT name, version, source, path FROM harnesses ORDER BY name;")?;
+        let rows = statement.query_map([], installed_harness_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn info(&self, name: &str) -> Result<InstalledHarness, CraftError> {
         validate_harness_name(name)?;
-        let output = self.query(&format!(
-            "SELECT name, version, source, path FROM harnesses WHERE name = {};",
-            sql_string(name)
-        ))?;
-        let mut rows = parse_registry_rows(&output)?;
-        rows.pop()
+        self.connection()?
+            .query_row(
+                "SELECT name, version, source, path FROM harnesses WHERE name = ?1;",
+                params![name],
+                installed_harness_from_row,
+            )
+            .optional()?
             .ok_or_else(|| CraftError::MissingHarness(format!("harness `{name}` is not installed")))
     }
 
@@ -309,48 +321,28 @@ impl HarnessRegistry {
         remove_files: bool,
     ) -> Result<InstalledHarness, CraftError> {
         let harness = self.info(name)?;
-        self.exec(&format!(
-            "DELETE FROM harnesses WHERE name = {};",
-            sql_string(name)
-        ))?;
+        self.connection()?
+            .execute("DELETE FROM harnesses WHERE name = ?1;", params![name])?;
         if remove_files && harness.path.exists() {
             fs::remove_dir_all(&harness.path)?;
         }
         Ok(harness)
     }
 
-    fn exec(&self, sql: &str) -> Result<(), CraftError> {
-        let status = Command::new("sqlite3")
-            .arg(&self.path)
-            .arg(sql)
-            .status()
-            .map_err(|err| CraftError::Registry(format!("failed to run sqlite3: {err}")))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(CraftError::Registry(format!(
-                "sqlite3 exited with status {status}"
-            )))
-        }
+    fn connection(&self) -> Result<Connection, CraftError> {
+        Connection::open(&self.path).map_err(Into::into)
     }
+}
 
-    fn query(&self, sql: &str) -> Result<String, CraftError> {
-        let output = Command::new("sqlite3")
-            .arg("-batch")
-            .arg("-separator")
-            .arg("\t")
-            .arg(&self.path)
-            .arg(sql)
-            .output()
-            .map_err(|err| CraftError::Registry(format!("failed to run sqlite3: {err}")))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(CraftError::Registry(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ))
-        }
-    }
+fn installed_harness_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<InstalledHarness, rusqlite::Error> {
+    Ok(InstalledHarness {
+        name: row.get(0)?,
+        version: row.get(1)?,
+        source: row.get(2)?,
+        path: PathBuf::from(row.get::<_, String>(3)?),
+    })
 }
 
 pub fn compose_harnesses(
@@ -650,25 +642,6 @@ fn merged_system_prompt(artifacts: &[ComposeArtifact]) -> String {
     merged
 }
 
-fn parse_registry_rows(output: &str) -> Result<Vec<InstalledHarness>, CraftError> {
-    let mut rows = Vec::new();
-    for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        let parts = line.split('\t').collect::<Vec<_>>();
-        if parts.len() != 4 {
-            return Err(CraftError::Registry(format!(
-                "unexpected registry row shape: {line}"
-            )));
-        }
-        rows.push(InstalledHarness {
-            name: parts[0].to_string(),
-            version: parts[1].to_string(),
-            source: parts[2].to_string(),
-            path: PathBuf::from(parts[3]),
-        });
-    }
-    Ok(rows)
-}
-
 fn run_command<I, S>(binary: &str, args: I, cwd: &Path) -> Result<(), CraftError>
 where
     I: IntoIterator<Item = S>,
@@ -727,10 +700,6 @@ fn note_conflict(
             "`{key}` from `{harness_name}` overrides earlier value from `{previous}`"
         ));
     }
-}
-
-fn sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn quoted(value: &str) -> String {

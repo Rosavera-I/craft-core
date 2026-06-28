@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 craft-manifest = { path = "../craft-manifest" }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [lints]
 workspace = true

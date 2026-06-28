@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MemoryScope {
     Global,
@@ -160,16 +162,13 @@ impl Memory {
     ) -> Result<Vec<MemoryFact>, MemoryError> {
         let query = query.as_ref();
         let like = format!("%{}%", escape_like(query));
-        let sql = format!(
+        self.query_facts(
             "SELECT scope, key, value, created_at
              FROM facts
-             WHERE scope = {} AND (key LIKE {} ESCAPE '\\' OR value LIKE {} ESCAPE '\\')
+             WHERE scope = ?1 AND (key LIKE ?2 ESCAPE '\\' OR value LIKE ?2 ESCAPE '\\')
              ORDER BY created_at DESC, id DESC;",
-            sql_string(&scope.storage_key()),
-            sql_string(&like),
-            sql_string(&like),
-        );
-        self.query_facts(&sql)
+            params![scope.storage_key(), like],
+        )
     }
 
     pub fn recall_key(
@@ -203,39 +202,39 @@ impl Memory {
         if fts_query.is_empty() {
             return Ok(Vec::new());
         }
-        let scope_filter = if scopes.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "AND f.scope IN ({})",
-                scopes
-                    .iter()
-                    .map(|scope| sql_string(&scope.storage_key()))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        let sql = format!(
+        let mut sql = String::from(
             "SELECT f.scope, f.key, f.value, f.created_at
              FROM facts_fts
              JOIN facts f ON f.id = facts_fts.rowid
-             WHERE facts_fts MATCH {} {scope_filter}
+             WHERE facts_fts MATCH ?1",
+        );
+        let mut params = vec![fts_query];
+        if !scopes.is_empty() {
+            let placeholders = (0..scopes.len())
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(" AND f.scope IN (");
+            sql.push_str(&placeholders);
+            sql.push(')');
+            params.extend(scopes.iter().map(MemoryScope::storage_key));
+        }
+        sql.push_str(
+            "
              ORDER BY bm25(facts_fts), f.created_at DESC
              LIMIT 50;",
-            sql_string(&fts_query),
         );
-        self.query_facts(&sql)
+        self.query_facts(&sql, params_from_iter(params.iter()))
     }
 
     pub fn inspect(&self, scope: &MemoryScope) -> Result<Vec<MemoryFact>, MemoryError> {
-        let sql = format!(
+        self.query_facts(
             "SELECT scope, key, value, created_at
              FROM facts
-             WHERE scope = {}
+             WHERE scope = ?1
              ORDER BY created_at DESC, id DESC;",
-            sql_string(&scope.storage_key()),
-        );
-        self.query_facts(&sql)
+            params![scope.storage_key()],
+        )
     }
 
     pub fn assemble_context(
@@ -283,7 +282,7 @@ impl Memory {
     }
 
     fn ensure_schema(&self) -> Result<(), MemoryError> {
-        self.exec(
+        self.connection()?.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS scopes (
                 name TEXT PRIMARY KEY,
@@ -326,7 +325,8 @@ impl Memory {
                 key TEXT,
                 created_at INTEGER NOT NULL
              );",
-        )
+        )?;
+        Ok(())
     }
 
     fn append_jsonl_event(
@@ -387,54 +387,28 @@ impl Memory {
         Ok(())
     }
 
-    fn exec(&self, sql: &str) -> Result<(), MemoryError> {
-        let output = Command::new("sqlite3")
-            .arg("-batch")
-            .arg(&self.db_path)
-            .arg(sql)
-            .output()
-            .map_err(|err| MemoryError::CommandFailed(format!("failed to run sqlite3: {err}")))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(MemoryError::Storage(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ))
-        }
+    fn connection(&self) -> Result<Connection, MemoryError> {
+        Connection::open(&self.db_path).map_err(Into::into)
     }
 
-    fn query_facts(&self, sql: &str) -> Result<Vec<MemoryFact>, MemoryError> {
-        let output = Command::new("sqlite3")
-            .arg("-batch")
-            .arg("-separator")
-            .arg("\t")
-            .arg(&self.db_path)
-            .arg(sql)
-            .output()
-            .map_err(|err| MemoryError::CommandFailed(format!("failed to run sqlite3: {err}")))?;
-        if !output.status.success() {
-            return Err(MemoryError::Storage(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        parse_fact_rows(&String::from_utf8_lossy(&output.stdout))
+    fn query_facts<P>(&self, sql: &str, params: P) -> Result<Vec<MemoryFact>, MemoryError>
+    where
+        P: rusqlite::Params,
+    {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(sql)?;
+        let rows = statement.query_map(params, memory_fact_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    fn query_events(&self, sql: &str) -> Result<Vec<MemoryEvent>, MemoryError> {
-        let output = Command::new("sqlite3")
-            .arg("-batch")
-            .arg("-separator")
-            .arg("\t")
-            .arg(&self.db_path)
-            .arg(sql)
-            .output()
-            .map_err(|err| MemoryError::CommandFailed(format!("failed to run sqlite3: {err}")))?;
-        if !output.status.success() {
-            return Err(MemoryError::Storage(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        parse_event_rows(&String::from_utf8_lossy(&output.stdout))
+    fn query_events<P>(&self, sql: &str, params: P) -> Result<Vec<MemoryEvent>, MemoryError>
+    where
+        P: rusqlite::Params,
+    {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(sql)?;
+        let rows = statement.query_map(params, memory_event_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }
 
@@ -450,17 +424,27 @@ impl MemoryStore for Memory {
         validate_key(key)?;
         let now = unix_timestamp()?;
         let scope_key = scope.storage_key();
-        let sql = format!(
-            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES ({scope}, {kind}, {now});
-             INSERT INTO facts (scope, key, value, created_at) VALUES ({scope}, {key}, {value}, {now});
-             INSERT INTO facts_fts (rowid, scope, key, value) VALUES (last_insert_rowid(), {scope}, {key}, {value});
-             INSERT INTO audit_log (action, scope, key, created_at) VALUES ('memory.record', {scope}, {key}, {now});",
-            scope = sql_string(&scope_key),
-            kind = sql_string(scope_kind(&scope)),
-            key = sql_string(key),
-            value = sql_string(value),
-        );
-        self.exec(&sql)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES (?1, ?2, ?3);",
+            params![scope_key, scope_kind(&scope), now],
+        )?;
+        transaction.execute(
+            "INSERT INTO facts (scope, key, value, created_at) VALUES (?1, ?2, ?3, ?4);",
+            params![scope_key, key, value, now],
+        )?;
+        let fact_id = transaction.last_insert_rowid();
+        transaction.execute(
+            "INSERT INTO facts_fts (rowid, scope, key, value) VALUES (?1, ?2, ?3, ?4);",
+            params![fact_id, scope_key, key, value],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_log (action, scope, key, created_at)
+             VALUES ('memory.record', ?1, ?2, ?3);",
+            params![scope_key, key, now],
+        )?;
+        transaction.commit()?;
         <Self as MemoryStore>::append_event(
             self,
             &scope,
@@ -487,16 +471,18 @@ impl MemoryStore for Memory {
     ) -> Result<Option<MemoryFact>, MemoryError> {
         let key = key.as_ref();
         validate_key(key)?;
-        let sql = format!(
-            "SELECT scope, key, value, created_at
+        self.connection()?
+            .query_row(
+                "SELECT scope, key, value, created_at
              FROM facts
-             WHERE scope = {} AND key = {}
+             WHERE scope = ?1 AND key = ?2
              ORDER BY created_at DESC, id DESC
              LIMIT 1;",
-            sql_string(&scope.storage_key()),
-            sql_string(key),
-        );
-        Ok(self.query_facts(&sql)?.into_iter().next())
+                params![scope.storage_key(), key],
+                memory_fact_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn append_event(
@@ -510,16 +496,24 @@ impl MemoryStore for Memory {
         validate_event_type(event_type)?;
         validate_json_payload(payload)?;
         let timestamp = unix_timestamp()?;
-        let sql = format!(
-            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES ({scope}, {kind}, {timestamp});
-             INSERT INTO events (scope, event_type, payload, created_at) VALUES ({scope}, {event_type}, {payload}, {timestamp});
-             INSERT INTO audit_log (action, scope, key, created_at) VALUES ('memory.event', {scope}, {event_type}, {timestamp});",
-            scope = sql_string(&scope.storage_key()),
-            kind = sql_string(scope_kind(scope)),
-            event_type = sql_string(event_type),
-            payload = sql_string(payload),
-        );
-        self.exec(&sql)?;
+        let scope_key = scope.storage_key();
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO scopes (name, kind, created_at) VALUES (?1, ?2, ?3);",
+            params![scope_key, scope_kind(scope), timestamp],
+        )?;
+        transaction.execute(
+            "INSERT INTO events (scope, event_type, payload, created_at)
+             VALUES (?1, ?2, ?3, ?4);",
+            params![scope_key, event_type, payload, timestamp],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_log (action, scope, key, created_at)
+             VALUES ('memory.event', ?1, ?2, ?3);",
+            params![scope_key, event_type, timestamp],
+        )?;
+        transaction.commit()?;
         self.append_jsonl_event(scope, event_type, payload, timestamp)?;
         Ok(MemoryEvent {
             scope: scope.clone(),
@@ -530,14 +524,13 @@ impl MemoryStore for Memory {
     }
 
     fn replay_events(&self, scope: &MemoryScope) -> Result<Vec<MemoryEvent>, MemoryError> {
-        let sql = format!(
+        self.query_events(
             "SELECT scope, event_type, payload, created_at
              FROM events
-             WHERE scope = {}
+             WHERE scope = ?1
              ORDER BY created_at DESC, id DESC;",
-            sql_string(&scope.storage_key()),
-        );
-        self.query_events(&sql)
+            params![scope.storage_key()],
+        )
     }
 }
 
@@ -574,46 +567,34 @@ impl From<std::io::Error> for MemoryError {
     }
 }
 
-fn parse_fact_rows(output: &str) -> Result<Vec<MemoryFact>, MemoryError> {
-    let mut facts = Vec::new();
-    for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        let parts = line.split('\t').collect::<Vec<_>>();
-        if parts.len() != 4 {
-            return Err(MemoryError::Storage(format!(
-                "unexpected memory row shape: {line}"
-            )));
-        }
-        facts.push(MemoryFact {
-            scope: MemoryScope::parse(parts[0])?,
-            key: parts[1].to_string(),
-            value: parts[2].to_string(),
-            created_at: parts[3]
-                .parse()
-                .map_err(|_| MemoryError::Storage(format!("invalid timestamp in row: {line}")))?,
-        });
+impl From<rusqlite::Error> for MemoryError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Storage(value.to_string())
     }
-    Ok(facts)
 }
 
-fn parse_event_rows(output: &str) -> Result<Vec<MemoryEvent>, MemoryError> {
-    let mut events = Vec::new();
-    for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        let parts = line.split('\t').collect::<Vec<_>>();
-        if parts.len() != 4 {
-            return Err(MemoryError::Storage(format!(
-                "unexpected event row shape: {line}"
-            )));
-        }
-        events.push(MemoryEvent {
-            scope: MemoryScope::parse(parts[0])?,
-            event_type: parts[1].to_string(),
-            payload: parts[2].to_string(),
-            timestamp: parts[3]
-                .parse()
-                .map_err(|_| MemoryError::Storage(format!("invalid timestamp in row: {line}")))?,
-        });
-    }
-    Ok(events)
+fn memory_fact_from_row(row: &rusqlite::Row<'_>) -> Result<MemoryFact, rusqlite::Error> {
+    let scope: String = row.get(0)?;
+    Ok(MemoryFact {
+        scope: MemoryScope::parse(&scope).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
+        })?,
+        key: row.get(1)?,
+        value: row.get(2)?,
+        created_at: row.get(3)?,
+    })
+}
+
+fn memory_event_from_row(row: &rusqlite::Row<'_>) -> Result<MemoryEvent, rusqlite::Error> {
+    let scope: String = row.get(0)?;
+    Ok(MemoryEvent {
+        scope: MemoryScope::parse(&scope).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
+        })?,
+        event_type: row.get(1)?,
+        payload: row.get(2)?,
+        timestamp: row.get(3)?,
+    })
 }
 
 fn unix_timestamp() -> Result<i64, MemoryError> {
@@ -690,10 +671,6 @@ fn scope_kind(scope: &MemoryScope) -> &str {
         MemoryScope::Session => "session",
         MemoryScope::Harness(_) => "harness",
     }
-}
-
-fn sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn json_string(value: &str) -> String {
