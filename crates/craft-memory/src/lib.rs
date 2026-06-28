@@ -124,8 +124,19 @@ pub struct Memory {
 impl Memory {
     pub fn open(home: impl Into<PathBuf>) -> Result<Self, MemoryError> {
         let home = home.into();
-        fs::create_dir_all(&home)?;
-        fs::create_dir_all(home.join("logs"))?;
+        fs::create_dir_all(&home).map_err(|err| {
+            MemoryError::io(
+                format!("failed to create memory home {}: {err}", home.display()),
+                err,
+            )
+        })?;
+        let logs_dir = home.join("logs");
+        fs::create_dir_all(&logs_dir).map_err(|err| {
+            MemoryError::io(
+                format!("failed to create memory logs {}: {err}", logs_dir.display()),
+                err,
+            )
+        })?;
         let memory = Self {
             db_path: home.join("memory.sqlite3"),
             home,
@@ -338,7 +349,16 @@ impl Memory {
     ) -> Result<(), MemoryError> {
         let date = current_date();
         let path = self.home.join("logs").join(format!("events-{date}.jsonl"));
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|err| {
+                MemoryError::io(
+                    format!("failed to open event log {}: {err}", path.display()),
+                    err,
+                )
+            })?;
         writeln!(
             file,
             "{{\"timestamp\":{},\"scope\":{},\"event_type\":{},\"payload\":{}}}",
@@ -346,7 +366,13 @@ impl Memory {
             json_string(&scope.storage_key()),
             json_string(event_type),
             payload
-        )?;
+        )
+        .map_err(|err| {
+            MemoryError::io(
+                format!("failed to write event log {}: {err}", path.display()),
+                err,
+            )
+        })?;
         Ok(())
     }
 
@@ -361,21 +387,47 @@ impl Memory {
         }
 
         let cutoff = unix_timestamp()? - 7 * 24 * 60 * 60;
-        for entry in fs::read_dir(self.home.join("logs"))? {
-            let entry = entry?;
+        let logs_dir = self.home.join("logs");
+        for entry in fs::read_dir(&logs_dir).map_err(|err| {
+            MemoryError::io(
+                format!("failed to read logs dir {}: {err}", logs_dir.display()),
+                err,
+            )
+        })? {
+            let entry = entry.map_err(|err| {
+                MemoryError::io(
+                    format!(
+                        "failed to read logs dir entry {}: {err}",
+                        logs_dir.display()
+                    ),
+                    err,
+                )
+            })?;
             let path = entry.path();
             if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
                 continue;
             }
             let modified = entry
-                .metadata()?
+                .metadata()
+                .map_err(|err| {
+                    MemoryError::io(format!("failed to stat {}: {err}", path.display()), err)
+                })?
                 .modified()
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_secs() as i64)
                 .unwrap_or(cutoff + 1);
             if modified < cutoff {
-                let status = Command::new("gzip").arg("-f").arg(&path).status()?;
+                let status = Command::new("gzip")
+                    .arg("-f")
+                    .arg(&path)
+                    .status()
+                    .map_err(|err| {
+                        MemoryError::io(
+                            format!("failed to run gzip for {}: {err}", path.display()),
+                            err,
+                        )
+                    })?;
                 if !status.success() {
                     return Err(MemoryError::CommandFailed(format!(
                         "gzip failed for {}",
@@ -388,7 +440,15 @@ impl Memory {
     }
 
     fn connection(&self) -> Result<Connection, MemoryError> {
-        Connection::open(&self.db_path).map_err(Into::into)
+        Connection::open(&self.db_path).map_err(|err| {
+            MemoryError::storage(
+                format!(
+                    "failed to open memory database {}: {err}",
+                    self.db_path.display()
+                ),
+                err,
+            )
+        })
     }
 
     fn query_facts<P>(&self, sql: &str, params: P) -> Result<Vec<MemoryFact>, MemoryError>
@@ -539,9 +599,15 @@ pub enum MemoryError {
     Config(String),
     InvalidScope(String),
     InvalidKey(String),
-    Io(String),
+    Io {
+        message: String,
+        source: std::io::Error,
+    },
     CommandFailed(String),
-    Storage(String),
+    Storage {
+        message: String,
+        source: rusqlite::Error,
+    },
     Time(String),
 }
 
@@ -551,25 +617,62 @@ impl fmt::Display for MemoryError {
             MemoryError::Config(message)
             | MemoryError::InvalidScope(message)
             | MemoryError::InvalidKey(message)
-            | MemoryError::Io(message)
             | MemoryError::CommandFailed(message)
-            | MemoryError::Storage(message)
             | MemoryError::Time(message) => write!(f, "{message}"),
+            MemoryError::Io { message, .. } | MemoryError::Storage { message, .. } => {
+                write!(f, "{message}")
+            }
         }
     }
 }
 
-impl std::error::Error for MemoryError {}
+impl std::error::Error for MemoryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            MemoryError::Io { source, .. } => Some(source),
+            MemoryError::Storage { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl MemoryError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            MemoryError::Config(_) => "config",
+            MemoryError::InvalidScope(_) => "invalid-scope",
+            MemoryError::InvalidKey(_) => "invalid-key",
+            MemoryError::Io { .. } => "io",
+            MemoryError::CommandFailed(_) => "runtime",
+            MemoryError::Storage { .. } => "sqlite",
+            MemoryError::Time(_) => "time",
+        }
+    }
+
+    fn io(message: impl Into<String>, source: std::io::Error) -> Self {
+        Self::Io {
+            message: message.into(),
+            source,
+        }
+    }
+
+    fn storage(message: impl Into<String>, source: rusqlite::Error) -> Self {
+        Self::Storage {
+            message: message.into(),
+            source,
+        }
+    }
+}
 
 impl From<std::io::Error> for MemoryError {
     fn from(value: std::io::Error) -> Self {
-        Self::Io(value.to_string())
+        Self::io(value.to_string(), value)
     }
 }
 
 impl From<rusqlite::Error> for MemoryError {
     fn from(value: rusqlite::Error) -> Self {
-        Self::Storage(value.to_string())
+        Self::storage(value.to_string(), value)
     }
 }
 

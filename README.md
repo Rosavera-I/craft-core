@@ -100,7 +100,7 @@ system = "# Harness: godot-designer\n\n...\n\n# Harness: roguelike-specialist\n\
 
 Prompts are concatenated in command order. Memory schemas, MCP bindings, and TDD validators are namespaced by harness name so a runner can consume each artifact without losing source ownership.
 
-The registry uses SQLite. This dependency-light milestone calls the `sqlite3` CLI so the workspace remains buildable offline; the API is shaped so a future `rusqlite` backend can replace it without changing CLI behavior.
+The registry uses SQLite through native `rusqlite` calls and prepared statements. Runtime errors include stable CLI error codes such as `error[io]`, `error[sqlite]`, and `error[manifest]` while preserving the underlying source error for library consumers.
 
 Run a composed harness against a local runtime:
 

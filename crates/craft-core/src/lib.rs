@@ -160,10 +160,16 @@ pub enum CraftError {
     InvalidSource(String),
     InvalidName(String),
     MissingHarness(String),
-    Io(String),
+    Io {
+        message: String,
+        source: std::io::Error,
+    },
     Manifest(ManifestError),
     CommandFailed(String),
-    Registry(String),
+    Registry {
+        message: String,
+        source: rusqlite::Error,
+    },
 }
 
 impl fmt::Display for CraftError {
@@ -173,19 +179,58 @@ impl fmt::Display for CraftError {
             | CraftError::InvalidSource(message)
             | CraftError::InvalidName(message)
             | CraftError::MissingHarness(message)
-            | CraftError::Io(message)
-            | CraftError::CommandFailed(message)
-            | CraftError::Registry(message) => write!(f, "{message}"),
+            | CraftError::CommandFailed(message) => write!(f, "{message}"),
+            CraftError::Io { message, .. } | CraftError::Registry { message, .. } => {
+                write!(f, "{message}")
+            }
             CraftError::Manifest(error) => write!(f, "{error}"),
         }
     }
 }
 
-impl std::error::Error for CraftError {}
+impl std::error::Error for CraftError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CraftError::Io { source, .. } => Some(source),
+            CraftError::Manifest(error) => Some(error),
+            CraftError::Registry { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl CraftError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            CraftError::Config(_) => "config",
+            CraftError::InvalidSource(_) => "invalid-source",
+            CraftError::InvalidName(_) => "invalid-name",
+            CraftError::MissingHarness(_) => "missing-harness",
+            CraftError::Io { .. } => "io",
+            CraftError::Manifest(_) => "manifest",
+            CraftError::CommandFailed(_) => "runtime",
+            CraftError::Registry { .. } => "sqlite",
+        }
+    }
+
+    fn io(message: impl Into<String>, source: std::io::Error) -> Self {
+        Self::Io {
+            message: message.into(),
+            source,
+        }
+    }
+
+    fn registry(message: impl Into<String>, source: rusqlite::Error) -> Self {
+        Self::Registry {
+            message: message.into(),
+            source,
+        }
+    }
+}
 
 impl From<std::io::Error> for CraftError {
     fn from(value: std::io::Error) -> Self {
-        Self::Io(value.to_string())
+        Self::io(value.to_string(), value)
     }
 }
 
@@ -197,7 +242,7 @@ impl From<ManifestError> for CraftError {
 
 impl From<rusqlite::Error> for CraftError {
     fn from(value: rusqlite::Error) -> Self {
-        Self::Registry(value.to_string())
+        Self::registry(value.to_string(), value)
     }
 }
 
@@ -330,7 +375,12 @@ impl HarnessRegistry {
     }
 
     fn connection(&self) -> Result<Connection, CraftError> {
-        Connection::open(&self.path).map_err(Into::into)
+        Connection::open(&self.path).map_err(|err| {
+            CraftError::registry(
+                format!("failed to open registry {}: {err}", self.path.display()),
+                err,
+            )
+        })
     }
 }
 
@@ -425,8 +475,9 @@ pub fn test_installed_harness(
 
 fn run_tdd_validators(root: &Path, manifest: &Manifest) -> Result<ValidationResult, CraftError> {
     let tdd_path = root.join(&manifest.validators.tdd);
-    let contents = fs::read_to_string(&tdd_path)
-        .map_err(|err| CraftError::Io(format!("failed to read {}: {err}", tdd_path.display())))?;
+    let contents = fs::read_to_string(&tdd_path).map_err(|err| {
+        CraftError::io(format!("failed to read {}: {err}", tdd_path.display()), err)
+    })?;
     if tdd_is_empty(&contents) {
         return Ok(ValidationResult {
             harness_name: manifest.harness.name.clone(),
@@ -541,7 +592,7 @@ fn command_output_result(label: &str, output: Output) -> Result<(), CraftError> 
 fn read_harness_artifact(root: &Path, relative_path: &Path) -> Result<String, CraftError> {
     let path = root.join(relative_path);
     fs::read_to_string(&path)
-        .map_err(|err| CraftError::Io(format!("failed to read {}: {err}", path.display())))
+        .map_err(|err| CraftError::io(format!("failed to read {}: {err}", path.display()), err))
 }
 
 fn render_compose(artifacts: &[ComposeArtifact], warnings: &[String]) -> String {

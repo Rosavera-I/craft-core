@@ -50,6 +50,38 @@ fn doctor_runs_without_panicking() {
 }
 
 #[test]
+fn coded_errors_include_error_code() {
+    let root = temp_root("craft-cli-coded-error");
+    let missing_compose = root.join("missing.compose.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("run")
+        .arg(&missing_compose)
+        .arg("--model")
+        .arg("llama3.1:8b")
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error[io]: failed to read"));
+    assert!(stderr.contains("missing.compose.toml"));
+}
+
+#[test]
+fn usage_errors_remain_uncoded() {
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("definitely-not-a-command")
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("error: unknown command"));
+    assert!(!stderr.starts_with("error["));
+}
+
+#[test]
 fn harness_list_handles_empty_registry() {
     let root = temp_root("craft-cli-list");
     let output = Command::new(env!("CARGO_BIN_EXE_craft"))
@@ -322,6 +354,25 @@ fn memory_commands_record_and_inspect_facts() {
 
     assert!(root.join("memory.sqlite3").is_file());
     assert!(root.join("logs").is_dir());
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
+fn memory_errors_include_stable_error_codes() {
+    let root = temp_root("craft-cli-memory-errors");
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("memory")
+        .arg("inspect")
+        .arg("--scope")
+        .arg("bad scope")
+        .env("CRAFT_HOME", &root)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error[invalid-scope]: invalid memory scope `bad scope`"));
 
     fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
 }

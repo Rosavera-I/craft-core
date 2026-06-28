@@ -14,15 +14,15 @@
 
 ---
 
-## M2: Hardening & Runtime (Next)
+## M2: Hardening & Runtime ✅
 
 ### P0: Critical Path
 
 | Feature | Impact | Effort | Description |
 |---------|--------|--------|-------------|
-| **rusqlite Migration** | High | Medium | Replace shell-based SQLite with native rusqlite crate. Eliminates manual quoting risks, improves error handling, enables async operations. |
-| **craft run Command** | High | Medium | Execute composed harness configurations: `craft run craft.compose.toml --model llama3.1:8b`. Bridge to Ollama/local LLM runtimes. **Initial CLI runtime bridge implemented.** |
-| **Error Handling Hardening** | High | Low | Replace String errors with structured error types, add error codes, improve diagnostics. |
+| **rusqlite Migration** | High | Medium | ✅ Replaced shell-based SQLite with native rusqlite calls and prepared statements. Eliminates manual quoting risks and improves error propagation. |
+| **craft run Command** | High | Medium | ✅ Execute composed harness configurations: `craft run craft.compose.toml --model llama3.1:8b`. Initial CLI runtime bridge implemented for Ollama-compatible local runtimes. |
+| **Error Handling Hardening** | High | Low | ✅ Structured core, memory, and CLI errors now expose stable error codes, preserve source errors, and print coded CLI diagnostics. |
 
 ### P1: Important
 
@@ -56,9 +56,9 @@
 ## Recommended M2 Execution Order
 
 ```
-1. rusqlite Migration (foundation)
-2. Error Handling Hardening (quality)
-3. craft run Command (user value)
+1. rusqlite Migration (foundation) ✅
+2. Error Handling Hardening (quality) ✅
+3. craft run Command (user value) ✅
 4. Compose Conflict Strategies (polish)
 5. Harness Version Resolution (ecosystem)
 6. LSP Integration (developer experience)
@@ -68,11 +68,10 @@
 
 ## Technical Debt Notes
 
-- Current SQLite shell-outs work but have quoting edge cases
 - TDD runner detection is MVP-level; needs richer integration
 - Memory context assembly uses simple token estimation (~4 chars/token)
 - No concurrency controls on SQLite (WAL mode helps but isn't sufficient for multi-process)
 
 ---
 
-*Last updated: 2026-06-27*
+*Last updated: 2026-06-28*
