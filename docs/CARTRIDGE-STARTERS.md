@@ -4,17 +4,17 @@ Starter cartridges should prove that CRAFT harnesses are useful as installable e
 
 ## Recommended Dogfood Order
 
-1. `craft-tdd-architect`
-2. `craft-godot-designer`
-3. `craft-rust-maintainer`
-4. `craft-codebase-cartographer`
-5. `craft-security-reviewer`
+1. `craft-tdd-architect` ✅ [Shipped](https://github.com/Rosavera-I/craft-tdd-architect)
+2. `craft-godot-designer` ✅ [Shipped](https://github.com/Rosavera-I/craft-godot-designer)
+3. `craft-rust-maintainer` ✅ [Shipped](https://github.com/Rosavera-I/craft-rust-maintainer)
+4. `craft-codebase-cartographer` — Planned
+5. `craft-security-reviewer` — Planned
 
 ## `craft-tdd-architect`
 
 Core idea: turn rough feature intent into executable test contracts and review loops.
 
-- Repo: `JMoak/craft-tdd-architect`.
+- Repo: [`Rosavera-I/craft-tdd-architect`](https://github.com/Rosavera-I/craft-tdd-architect) (will transfer to `JMoak/craft-tdd-architect`).
 - Prompt: red-green-refactor framing, crisp acceptance criteria, and edge-case enumeration.
 - Memory schema: project testing conventions, fixture locations, known flaky tests.
 - Tools: filesystem plus test runner command bindings.
@@ -25,7 +25,7 @@ Core idea: turn rough feature intent into executable test contracts and review l
 
 Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's indie game work.
 
-- Repo: `JMoak/craft-godot-designer`.
+- Repo: [`Rosavera-I/craft-godot-designer`](https://github.com/Rosavera-I/craft-godot-designer) (will transfer to `JMoak/craft-godot-designer`).
 - Prompt: Godot 4.4, signal-driven architecture, data-driven resources, scene ergonomics.
 - Memory schema: project autoloads, node conventions, physics constraints, input maps.
 - Tools: filesystem, ripgrep, optional Godot headless validation command.
@@ -36,7 +36,7 @@ Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's ind
 
 Core idea: Rust implementation partner for small CLI/workspace crates like CRAFT itself.
 
-- Repo: `JMoak/craft-rust-maintainer`.
+- Repo: [`Rosavera-I/craft-rust-maintainer`](https://github.com/Rosavera-I/craft-rust-maintainer) (will transfer to `JMoak/craft-rust-maintainer`).
 - Prompt: std-first, explicit error types, narrow tests, fmt/test/clippy gates.
 - Memory schema: crate boundaries, lint policy, dependency policy, release target.
 - Tools: cargo, rustfmt, clippy, filesystem.
