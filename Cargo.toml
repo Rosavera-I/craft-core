@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/craft-cli",
     "crates/craft-core",
+    "crates/craft-lsp",
     "crates/craft-manifest",
     "crates/craft-memory",
 ]
