@@ -1,9 +1,0 @@
-[[server]]
-name = "filesystem"
-description = "Inspect source and test files"
-command = "mcp-filesystem"
-
-[[server]]
-name = "shell"
-description = "Run test and lint commands with project-approved permissions"
-command = "mcp-shell"

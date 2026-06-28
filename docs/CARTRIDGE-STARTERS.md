@@ -14,7 +14,7 @@ Starter cartridges should prove that CRAFT harnesses are useful as installable e
 
 Core idea: turn rough feature intent into executable test contracts and review loops.
 
-- Repo: `Rosavera-I/craft-tdd-architect` initially; mirror or PR to `JMoak/*` when Jordan wants ownership moved.
+- Repo: `JMoak/craft-tdd-architect`.
 - Prompt: red-green-refactor framing, crisp acceptance criteria, and edge-case enumeration.
 - Memory schema: project testing conventions, fixture locations, known flaky tests.
 - Tools: filesystem plus test runner command bindings.
@@ -25,7 +25,7 @@ Core idea: turn rough feature intent into executable test contracts and review l
 
 Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's indie game work.
 
-- Repo: `Rosavera-I/craft-godot-designer`.
+- Repo: `JMoak/craft-godot-designer`.
 - Prompt: Godot 4.4, signal-driven architecture, data-driven resources, scene ergonomics.
 - Memory schema: project autoloads, node conventions, physics constraints, input maps.
 - Tools: filesystem, ripgrep, optional Godot headless validation command.
@@ -36,7 +36,7 @@ Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's ind
 
 Core idea: Rust implementation partner for small CLI/workspace crates like CRAFT itself.
 
-- Repo: `Rosavera-I/craft-rust-maintainer`.
+- Repo: `JMoak/craft-rust-maintainer`.
 - Prompt: std-first, explicit error types, narrow tests, fmt/test/clippy gates.
 - Memory schema: crate boundaries, lint policy, dependency policy, release target.
 - Tools: cargo, rustfmt, clippy, filesystem.
@@ -47,7 +47,7 @@ Core idea: Rust implementation partner for small CLI/workspace crates like CRAFT
 
 Core idea: quickly map unfamiliar repos into architecture, workflows, risks, and next edits.
 
-- Repo: `Rosavera-I/craft-codebase-cartographer`.
+- Repo: `JMoak/craft-codebase-cartographer`.
 - Prompt: read-before-changing, identify entrypoints, summarize contracts and tests.
 - Memory schema: repo map, commands, ownership boundaries, open risks.
 - Tools: filesystem, ripgrep, git.
@@ -58,7 +58,7 @@ Core idea: quickly map unfamiliar repos into architecture, workflows, risks, and
 
 Core idea: focused security review cartridge for local code and agent tooling.
 
-- Repo: `Rosavera-I/craft-security-reviewer`.
+- Repo: `JMoak/craft-security-reviewer`.
 - Prompt: secrets, command execution, injection, path traversal, auth boundaries, privacy leaks.
 - Memory schema: trust tiers, sensitive paths, external surfaces, known mitigations.
 - Tools: ripgrep, dependency inspection, git diff.
@@ -67,7 +67,7 @@ Core idea: focused security review cartridge for local code and agent tooling.
 
 ## First Build
 
-Start with `craft-tdd-architect` because it strengthens every later cartridge and gives CRAFT a self-improving validation loop. Keep the first repo tiny:
+Start with `craft-tdd-architect` because it strengthens every later cartridge and gives CRAFT a self-improving validation loop. Keep each repo tiny:
 
 ```text
 craft.toml

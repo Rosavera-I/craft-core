@@ -1,4 +1,0 @@
-check includes_behavior_contract
-check names_edge_cases
-check proposes_test_command
-forbid implementation_without_test

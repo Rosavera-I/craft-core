@@ -17,7 +17,7 @@ This repository currently provides:
 - `craft validate` and `craft harness test <name>` for manifest checks plus `tdd-dsl` validator execution.
 - A minimal `craft lsp` stdio language server for `craft.toml` diagnostics and manifest completions.
 - A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
-- Starter cartridges under `examples/cartridges/` for Godot design, TDD architecture, and Rust maintenance.
+- Installable starter cartridges published as separate `JMoak/craft-*` repositories.
 - CI for format, clippy, and tests.
 
 ## Quickstart
@@ -126,13 +126,13 @@ The current server supports LSP `initialize`, `shutdown`, manifest diagnostics f
 
 ## Starter Cartridges
 
-Example harness cartridges live in `examples/cartridges/`:
+Starter harness cartridges live in their own repositories so they can be installed, versioned, validated, and evolved independently from CRAFT Core:
 
-- `godot-designer` for Godot 4 gameplay and scene review.
-- `tdd-architect` for turning feature intent into executable behavior contracts.
-- `rust-maintainer` for Rust review, maintenance, and release hygiene.
+- `JMoak/craft-godot-designer` for Godot 4 gameplay and scene review.
+- `JMoak/craft-tdd-architect` for turning feature intent into executable behavior contracts.
+- `JMoak/craft-rust-maintainer` for Rust review, maintenance, and release hygiene.
 
-Each cartridge includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be validated and composed like a normal harness.
+Each cartridge repo includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be installed and composed like any other harness.
 
 See `docs/CARTRIDGE-STARTERS.md` for the five-cartridge dogfood plan and split-out order.
 

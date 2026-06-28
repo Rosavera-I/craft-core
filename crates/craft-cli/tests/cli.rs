@@ -188,6 +188,32 @@ fn validate_runs_tdd_dsl_when_checks_exist() {
 }
 
 #[test]
+fn validate_relative_path_runs_tdd_dsl_from_harness_root() {
+    let parent = temp_root("craft-cli-validate-relative");
+    let root = parent.join("godot-designer");
+    create_harness(&root, "godot-designer");
+    let bin_dir = fake_tdd_dsl_bin(&parent);
+
+    let validate = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("validate")
+        .arg("godot-designer")
+        .current_dir(&parent)
+        .env("PATH", path_with_prefix(&bin_dir))
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        validate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&validate.stdout);
+    assert!(stdout.contains("validated godot-designer"));
+    assert!(stdout.contains("tdd: ok"));
+
+    fs::remove_dir_all(parent).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
 fn harness_test_runs_installed_harness_tdd_checks() {
     let root = temp_root("craft-cli-harness-test");
     let craft_home = root.join(".craft");

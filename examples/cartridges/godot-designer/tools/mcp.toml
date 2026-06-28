@@ -1,4 +1,0 @@
-[[server]]
-name = "filesystem"
-description = "Read project scenes, scripts, resources, and test fixtures"
-command = "mcp-filesystem"
