@@ -1,0 +1,8 @@
+[facts]
+test_framework = "Project test framework and command"
+domain_terms = "Ubiquitous language for behavior specs"
+quality_bar = "Required coverage, lint, and review gates"
+
+[events]
+contract_added = "New behavior contract accepted"
+regression_found = "Bug converted into a regression test"

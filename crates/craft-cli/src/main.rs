@@ -8,6 +8,7 @@ use craft_core::{
     CraftError, CraftHome, GithubSource, HarnessManager, ValidationResult, compose_harnesses,
     test_installed_harness, validate_harness_project,
 };
+use craft_manifest::parse_manifest;
 use craft_memory::{Memory, MemoryError, MemoryScope};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -128,6 +129,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
         Some("harness") => harness_command(&args[1..]),
         Some("compose") => compose_command(&args[1..]),
         Some("run") => run_compose_command(&args[1..]),
+        Some("lsp") => lsp_command(),
         Some("validate") => validate_command(&args[1..]),
         Some("memory") => memory_command(&args[1..]),
         Some(command) => Err(CliError::usage(format!(
@@ -151,6 +153,7 @@ Usage:
   craft harness uninstall <name>
   craft compose <harness> [harness...] [-o craft.compose.toml]
   craft run [craft.compose.toml] --model <model> [--runtime ollama] [--prompt <text>]
+  craft lsp             Start the craft.toml language server on stdio
   craft validate [path]   Validate a harness manifest and TDD checks
   craft memory log <scope> <key> <value>
   craft memory recall <scope> <key>
@@ -385,6 +388,179 @@ fn run_compose_command(args: &[String]) -> Result<(), CliError> {
             "{runtime} exited with status {status}"
         )))
     }
+}
+
+fn lsp_command() -> Result<(), CliError> {
+    let mut input = String::new();
+    io::Read::read_to_string(&mut io::stdin(), &mut input)?;
+    for message in lsp_messages(&input) {
+        if message.contains("\"method\":\"initialize\"") {
+            let id = json_id(&message).unwrap_or_else(|| "null".to_string());
+            lsp_send(&format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":1,"completionProvider":{{"triggerCharacters":[".","\""]}},"definitionProvider":true}}}}}}"#
+            ));
+        } else if message.contains("\"method\":\"textDocument/didOpen\"")
+            || message.contains("\"method\":\"textDocument/didSave\"")
+        {
+            let uri = json_string_field(&message, "uri").unwrap_or_default();
+            let text = json_string_field(&message, "text").unwrap_or_else(|| {
+                file_uri_path(&uri)
+                    .and_then(|path| fs::read_to_string(path).ok())
+                    .unwrap_or_default()
+            });
+            lsp_publish_diagnostics(&uri, &text);
+        } else if message.contains("\"method\":\"textDocument/completion\"") {
+            let id = json_id(&message).unwrap_or_else(|| "null".to_string());
+            lsp_send(&format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":[{}]}}"#,
+                lsp_completion_items().join(",")
+            ));
+        } else if message.contains("\"method\":\"textDocument/definition\"") {
+            let id = json_id(&message).unwrap_or_else(|| "null".to_string());
+            lsp_send(&format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#));
+        } else if message.contains("\"method\":\"shutdown\"") {
+            let id = json_id(&message).unwrap_or_else(|| "null".to_string());
+            lsp_send(&format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#));
+        }
+    }
+    Ok(())
+}
+
+fn lsp_messages(input: &str) -> Vec<String> {
+    let mut messages = Vec::new();
+    let mut rest = input;
+    while let Some(header_end) = rest.find("\r\n\r\n") {
+        let (headers, after_headers) = rest.split_at(header_end);
+        let Some(length) = headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        }) else {
+            break;
+        };
+        let body = &after_headers[4..];
+        if body.len() < length {
+            break;
+        }
+        messages.push(body[..length].to_string());
+        rest = &body[length..];
+    }
+    messages
+}
+
+fn lsp_send(body: &str) {
+    print!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+}
+
+fn lsp_publish_diagnostics(uri: &str, text: &str) {
+    let diagnostics = match parse_manifest(text) {
+        Ok(_) => Vec::new(),
+        Err(error) => vec![format!(
+            r#"{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}},"severity":1,"source":"craft","message":"{}"}}"#,
+            json_escape(&error.to_string())
+        )],
+    };
+    lsp_send(&format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{{"uri":"{}","diagnostics":[{}]}}}}"#,
+        json_escape(uri),
+        diagnostics.join(",")
+    ));
+}
+
+fn lsp_completion_items() -> Vec<String> {
+    [
+        "[harness]",
+        "name",
+        "version",
+        "description",
+        "authors",
+        "[model]",
+        "min_context",
+        "recommended",
+        "[prompts]",
+        "system",
+        "[memory]",
+        "schema",
+        "[tools]",
+        "mcp",
+        "[validators]",
+        "tdd",
+    ]
+    .iter()
+    .map(|label| format!(r#"{{"label":"{}","kind":10}}"#, json_escape(label)))
+    .collect()
+}
+
+fn json_id(message: &str) -> Option<String> {
+    let index = message.find("\"id\"")?;
+    let after_key = message[index..].find(':')? + index + 1;
+    let rest = message[after_key..].trim_start();
+    if rest.starts_with('"') {
+        let value = json_string_at(rest)?;
+        Some(format!("\"{}\"", json_escape(&value)))
+    } else {
+        Some(
+            rest.chars()
+                .take_while(|character| character.is_ascii_digit() || *character == '-')
+                .collect(),
+        )
+        .filter(|value: &String| !value.is_empty())
+    }
+}
+
+fn json_string_field(message: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let index = message.find(&needle)?;
+    let after_key = message[index + needle.len()..].find(':')? + index + needle.len() + 1;
+    json_string_at(message[after_key..].trim_start())
+}
+
+fn json_string_at(input: &str) -> Option<String> {
+    let mut chars = input.chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+    let mut output = String::new();
+    let mut escaped = false;
+    for character in chars {
+        if escaped {
+            match character {
+                'n' => output.push('\n'),
+                'r' => output.push('\r'),
+                't' => output.push('\t'),
+                '"' => output.push('"'),
+                '\\' => output.push('\\'),
+                other => output.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => return Some(output),
+            other => output.push(other),
+        }
+    }
+    None
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| match character {
+            '"' => "\\\"".chars().collect::<Vec<_>>(),
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            '\n' => "\\n".chars().collect::<Vec<_>>(),
+            '\r' => "\\r".chars().collect::<Vec<_>>(),
+            '\t' => "\\t".chars().collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect()
+}
+
+fn file_uri_path(uri: &str) -> Option<PathBuf> {
+    uri.strip_prefix("file://").map(PathBuf::from)
 }
 
 fn load_compose_system_prompt(path: &Path) -> Result<String, CliError> {

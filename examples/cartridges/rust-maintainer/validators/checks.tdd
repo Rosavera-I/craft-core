@@ -1,0 +1,4 @@
+check cites_file_reference
+check includes_verification_command
+check preserves_existing_patterns
+forbid claims_without_tests

@@ -15,7 +15,9 @@ This repository currently provides:
 - A persistent SQLite harness registry at `~/.craft/registry.sqlite3`.
 - `craft compose` output that merges prompt, memory, MCP tool, and validator artifacts with ordered conflict warnings.
 - `craft validate` and `craft harness test <name>` for manifest checks plus `tdd-dsl` validator execution.
+- A minimal `craft lsp` stdio language server for `craft.toml` diagnostics and manifest completions.
 - A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
+- Starter cartridges under `examples/cartridges/` for Godot design, TDD architecture, and Rust maintenance.
 - CI for format, clippy, and tests.
 
 ## Quickstart
@@ -25,6 +27,7 @@ cargo run -p craft-cli -- init
 cargo run -p craft-cli -- doctor
 cargo run -p craft-cli -- harness list
 cargo run -p craft-cli -- run craft.compose.toml --model llama3.1:8b
+cargo run -p craft-cli -- lsp
 cargo test
 ```
 
@@ -110,6 +113,26 @@ craft run craft.compose.toml --model qwen2.5:7b --runtime ollama
 ```
 
 `craft run` reads the merged `[prompts].system` value from `craft.compose.toml` and passes it to `ollama run <model>` by default. Use `--runtime` to point at another Ollama-compatible local runtime binary.
+
+## Language Server
+
+Start the `craft.toml` language server over stdio:
+
+```sh
+craft lsp
+```
+
+The current server supports LSP `initialize`, `shutdown`, manifest diagnostics for opened or saved documents, completion labels for known CRAFT sections and fields, and a null-safe definition response. It is intentionally dependency-light so editor integration can land before a fuller LSP stack is introduced.
+
+## Starter Cartridges
+
+Example harness cartridges live in `examples/cartridges/`:
+
+- `godot-designer` for Godot 4 gameplay and scene review.
+- `tdd-architect` for turning feature intent into executable behavior contracts.
+- `rust-maintainer` for Rust review, maintenance, and release hygiene.
+
+Each cartridge includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be validated and composed like a normal harness.
 
 ## Memory Store
 

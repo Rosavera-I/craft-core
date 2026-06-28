@@ -28,7 +28,7 @@
 
 | Feature | Impact | Effort | Description |
 |---------|--------|--------|-------------|
-| **LSP Integration** | High | High | Language server for craft.toml files: autocomplete, validation, go-to-definition for harness refs. |
+| **LSP Integration** | High | High | ✅ Initial `craft lsp` stdio server for craft.toml diagnostics, completions, and editor handshake support. |
 | **Harness Version Resolution** | Medium | Medium | Support semver ranges in harness dependencies, version conflict resolution. |
 | **Compose Conflict Strategies** | Medium | Low | Add `merge`, `override`, `fail` strategies for artifact conflicts beyond ordered-merge. |
 | **Memory Event Streaming** | Medium | Low | Real-time JSONL event streaming for external tools to consume memory changes. |
@@ -61,7 +61,7 @@
 3. craft run Command (user value) ✅
 4. Compose Conflict Strategies (polish)
 5. Harness Version Resolution (ecosystem)
-6. LSP Integration (developer experience)
+6. LSP Integration (developer experience) ✅
 ```
 
 ---
@@ -71,6 +71,7 @@
 - TDD runner detection is MVP-level; needs richer integration
 - Memory context assembly uses simple token estimation (~4 chars/token)
 - No concurrency controls on SQLite (WAL mode helps but isn't sufficient for multi-process)
+- LSP server is intentionally minimal and dependency-free; richer position-aware diagnostics and real go-to-definition should land with a fuller JSON/LSP stack.
 
 ---
 

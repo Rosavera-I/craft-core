@@ -1,0 +1,9 @@
+[facts]
+project_engine = "Godot version and renderer"
+gameplay_loop = "Current core loop and player verbs"
+scene_patterns = "Preferred scene ownership and signal patterns"
+tuning_values = "Important exported gameplay constants"
+
+[events]
+playtest_note = "Observed playtest feedback or feel issue"
+design_decision = "Accepted gameplay or architecture decision"

@@ -1,0 +1,9 @@
+[facts]
+workspace_layout = "Crates and responsibility boundaries"
+quality_commands = "Format, lint, and test commands"
+error_patterns = "Project error types and diagnostic style"
+release_notes = "User-facing changes queued for release"
+
+[events]
+review_finding = "Confirmed code review finding"
+release_decision = "Accepted release or versioning decision"

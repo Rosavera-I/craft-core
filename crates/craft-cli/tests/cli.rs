@@ -1,8 +1,9 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use craft_core::{HarnessRegistry, InstalledHarness};
@@ -298,6 +299,38 @@ system = "System prompt\n"
 }
 
 #[test]
+fn lsp_initializes_and_reports_manifest_diagnostics() {
+    let request = lsp_packet(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+        + &lsp_packet(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/craft.toml","languageId":"toml","version":1,"text":"[harness]\nname = \"bad\"\n"}}}"#,
+        )
+        + &lsp_packet(r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#);
+
+    let output = run_lsp(&request);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""id":1"#));
+    assert!(stdout.contains(r#""completionProvider""#));
+    assert!(stdout.contains(r#""textDocument/publishDiagnostics""#));
+    assert!(stdout.contains("missing required field"));
+    assert!(stdout.contains(r#""id":2"#));
+}
+
+#[test]
+fn lsp_returns_manifest_completions() {
+    let request = lsp_packet(
+        r#"{"jsonrpc":"2.0","id":1,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///tmp/craft.toml"},"position":{"line":0,"character":0}}}"#,
+    );
+
+    let output = run_lsp(&request);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""label":"[harness]""#));
+    assert!(stdout.contains(r#""label":"min_context""#));
+    assert!(stdout.contains(r#""label":"tdd""#));
+}
+
+#[test]
 fn memory_commands_record_and_inspect_facts() {
     let root = temp_root("craft-cli-memory");
 
@@ -466,6 +499,29 @@ fn path_with_prefix(prefix: &Path) -> OsString {
         paths.extend(std::env::split_paths(&existing));
     }
     std::env::join_paths(paths).unwrap_or_else(|err| panic!("{err}"))
+}
+
+fn lsp_packet(body: &str) -> String {
+    format!("Content-Length: {}\r\n\r\n{body}", body.len())
+}
+
+fn run_lsp(input: &str) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("{err}"));
+    child
+        .stdin
+        .as_mut()
+        .unwrap_or_else(|| panic!("missing stdin"))
+        .write_all(input.as_bytes())
+        .unwrap_or_else(|err| panic!("{err}"));
+    child
+        .wait_with_output()
+        .unwrap_or_else(|err| panic!("{err}"))
 }
 
 fn create_harness(root: &Path, name: &str) {

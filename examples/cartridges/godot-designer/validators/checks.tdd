@@ -1,0 +1,4 @@
+# Check generated guidance stays concrete enough to implement.
+check mentions_scene_or_script_path
+check includes_small_next_step
+forbid rewrites_entire_game_architecture

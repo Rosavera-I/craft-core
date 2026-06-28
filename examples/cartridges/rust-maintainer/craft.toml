@@ -1,0 +1,21 @@
+[harness]
+name = "rust-maintainer"
+version = "0.1.0"
+description = "Rust codebase maintenance harness for focused fixes, reviews, and release hygiene"
+authors = ["JMoak"]
+
+[model]
+min_context = 8192
+recommended = ["qwen2.5-coder:7b", "llama3.1:8b"]
+
+[prompts]
+system = "prompts/system.md"
+
+[memory]
+schema = "memory/schema.toml"
+
+[tools]
+mcp = "tools/mcp.toml"
+
+[validators]
+tdd = "validators/checks.tdd"
