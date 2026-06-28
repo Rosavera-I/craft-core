@@ -77,8 +77,11 @@ Validation first checks `craft.toml` and referenced artifacts. If `validators/ch
 Compose multiple installed harnesses into a generated config:
 
 ```sh
+craft compose godot-designer roguelike-specialist --plan
 craft compose godot-designer roguelike-specialist -o craft.compose.toml
 ```
+
+`--plan` previews the ordered merge without writing a compose file. It lists each harness source, artifact paths, merge strategy, and warnings such as duplicate harness entries.
 
 The generated `craft.compose.toml` includes harness metadata plus merged artifacts:
 
@@ -134,7 +137,9 @@ Starter harness cartridges live in their own repositories so they can be install
 
 Each cartridge repo includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be installed and composed like any other harness.
 
+See `docs/HARNESS-LIFECYCLE.md` for the public harness lifecycle, artifact contract, and release checklist.
 See `docs/CARTRIDGE-STARTERS.md` for the five-cartridge dogfood plan and split-out order.
+See `docs/STACK-DOGFOOD.md` for the current cross-cartridge improvement loop and release-readiness flow.
 
 ## Memory Store
 

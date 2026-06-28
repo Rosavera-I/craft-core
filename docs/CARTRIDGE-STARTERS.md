@@ -2,6 +2,23 @@
 
 Starter cartridges should prove that CRAFT harnesses are useful as installable expertise packages, not just manifest fixtures. Build them small, validate them with `craft validate`, and compose them together as soon as two exist.
 
+## Cartridge Contract
+
+```mermaid
+flowchart LR
+    Manifest[craft.toml] --> Prompt[prompts/system.md]
+    Manifest --> Memory[memory/schema.toml]
+    Manifest --> Tools[tools/mcp.toml]
+    Manifest --> Validators[validators/checks.tdd]
+    Prompt --> Compose[craft compose]
+    Memory --> Compose
+    Tools --> Compose
+    Validators --> Validate[craft validate]
+    Compose --> Run[craft run]
+```
+
+Every starter should explain its workflow in `README.md`, include a domain-specific Mermaid diagram, and keep validators focused on output shape rather than pretending to enforce full semantic correctness.
+
 ## Recommended Dogfood Order
 
 1. `craft-tdd-architect` ✅ [Shipped](https://github.com/Rosavera-I/craft-tdd-architect)
@@ -14,7 +31,7 @@ Starter cartridges should prove that CRAFT harnesses are useful as installable e
 
 Core idea: turn rough feature intent into executable test contracts and review loops.
 
-- Repo: [`Rosavera-I/craft-tdd-architect`](https://github.com/Rosavera-I/craft-tdd-architect) (will transfer to `JMoak/craft-tdd-architect`).
+- Repo: [`Rosavera-I/craft-tdd-architect`](https://github.com/Rosavera-I/craft-tdd-architect).
 - Prompt: red-green-refactor framing, crisp acceptance criteria, and edge-case enumeration.
 - Memory schema: project testing conventions, fixture locations, known flaky tests.
 - Tools: filesystem plus test runner command bindings.
@@ -25,7 +42,7 @@ Core idea: turn rough feature intent into executable test contracts and review l
 
 Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's indie game work.
 
-- Repo: [`Rosavera-I/craft-godot-designer`](https://github.com/Rosavera-I/craft-godot-designer) (will transfer to `JMoak/craft-godot-designer`).
+- Repo: [`Rosavera-I/craft-godot-designer`](https://github.com/Rosavera-I/craft-godot-designer).
 - Prompt: Godot 4.4, signal-driven architecture, data-driven resources, scene ergonomics.
 - Memory schema: project autoloads, node conventions, physics constraints, input maps.
 - Tools: filesystem, ripgrep, optional Godot headless validation command.
@@ -36,7 +53,7 @@ Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's ind
 
 Core idea: Rust implementation partner for small CLI/workspace crates like CRAFT itself.
 
-- Repo: [`Rosavera-I/craft-rust-maintainer`](https://github.com/Rosavera-I/craft-rust-maintainer) (will transfer to `JMoak/craft-rust-maintainer`).
+- Repo: [`Rosavera-I/craft-rust-maintainer`](https://github.com/Rosavera-I/craft-rust-maintainer).
 - Prompt: std-first, explicit error types, narrow tests, fmt/test/clippy gates.
 - Memory schema: crate boundaries, lint policy, dependency policy, release target.
 - Tools: cargo, rustfmt, clippy, filesystem.

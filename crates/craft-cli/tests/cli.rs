@@ -133,6 +133,67 @@ fn compose_command_writes_compose_file() {
 }
 
 #[test]
+fn compose_plan_describes_merge_without_writing_file() {
+    let root = temp_root("craft-cli-compose-plan");
+    let craft_home = root.join(".craft");
+    let harness_root = craft_home.join("harnesses/godot-designer");
+    create_harness(&harness_root, "godot-designer");
+    seed_registry(&craft_home, "godot-designer", &harness_root);
+
+    let output_path = root.join("craft.compose.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("compose")
+        .arg("godot-designer")
+        .arg("--plan")
+        .arg("--output")
+        .arg(&output_path)
+        .env("CRAFT_HOME", &craft_home)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("composition plan"));
+    assert!(stdout.contains("strategy: ordered-merge"));
+    assert!(stdout.contains("- godot-designer 0.1.0"));
+    assert!(stdout.contains("prompts.system: concatenated in listed order"));
+    assert!(!output_path.exists());
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
+fn compose_plan_warns_for_duplicate_harnesses() {
+    let root = temp_root("craft-cli-compose-plan-duplicate");
+    let craft_home = root.join(".craft");
+    let harness_root = craft_home.join("harnesses/godot-designer");
+    create_harness(&harness_root, "godot-designer");
+    seed_registry(&craft_home, "godot-designer", &harness_root);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("compose")
+        .arg("godot-designer")
+        .arg("godot-designer")
+        .arg("--plan")
+        .env("CRAFT_HOME", &craft_home)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("appears more than once"));
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
 fn validate_accepts_initialized_project_without_checks() {
     let root = temp_root("craft-cli-validate-empty");
     let init = Command::new(env!("CARGO_BIN_EXE_craft"))
