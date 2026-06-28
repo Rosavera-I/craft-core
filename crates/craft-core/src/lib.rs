@@ -462,7 +462,16 @@ pub fn compose_harnesses(
 
 pub fn validate_harness_project(root: impl AsRef<Path>) -> Result<ValidationResult, CraftError> {
     let project = HarnessProject::load(root.as_ref())?;
-    run_tdd_validators(project.root(), project.manifest())
+    let root = project.root().canonicalize().map_err(|err| {
+        CraftError::io(
+            format!(
+                "failed to resolve harness root {}: {err}",
+                project.root().display()
+            ),
+            err,
+        )
+    })?;
+    run_tdd_validators(&root, project.manifest())
 }
 
 pub fn test_installed_harness(

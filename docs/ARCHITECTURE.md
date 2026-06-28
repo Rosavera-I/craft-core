@@ -4,7 +4,7 @@ CRAFT separates the core runtime from individual harness repositories.
 
 ## Repositories
 
-- `craft-core`: CLI, manifest model, composition engine, memory interfaces, runners.
+- `craft-core`: CLI, manifest model, composition engine, memory interfaces, runners, and developer tooling.
 - `craft-<harness>`: one repository per expertise harness.
 
 ## Crates
@@ -12,7 +12,8 @@ CRAFT separates the core runtime from individual harness repositories.
 - `craft-cli`: command-line entry point.
 - `craft-manifest`: `craft.toml` parsing and validation.
 - `craft-core`: harness project loading and future composition APIs.
-- `craft-memory`: scoped memory interface and in-memory stub.
+- `craft-lsp`: stdio language-server protocol adapter for `craft.toml`.
+- `craft-memory`: scoped SQLite memory store and JSONL event log.
 
 ## Milestone Path
 
@@ -21,3 +22,4 @@ CRAFT separates the core runtime from individual harness repositories.
 3. Memory: SQLite plus JSONL event log with scoped retrieval.
 4. Runner: local model adapters and tool bindings.
 5. Validation: `tdd-dsl` powered harness tests.
+6. Developer experience: `craft.toml` LSP diagnostics, completions, and harness navigation.

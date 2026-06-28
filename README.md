@@ -8,7 +8,7 @@ CRAFT is a Rust-native foundation for local-model expertise harnesses: reusable 
 
 This repository currently provides:
 
-- A Rust workspace with `craft-cli`, `craft-core`, `craft-manifest`, and `craft-memory`.
+- A Rust workspace with `craft-cli`, `craft-core`, `craft-lsp`, `craft-manifest`, and `craft-memory`.
 - A `craft` CLI with `init`, `doctor`, `version`, harness registry commands, composition, and help output.
 - A `craft.toml` manifest parser and validator.
 - GitHub harness installation into `~/.craft/harnesses`.
@@ -17,7 +17,7 @@ This repository currently provides:
 - `craft validate` and `craft harness test <name>` for manifest checks plus `tdd-dsl` validator execution.
 - A minimal `craft lsp` stdio language server for `craft.toml` diagnostics and manifest completions.
 - A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
-- Starter cartridges under `examples/cartridges/` for Godot design, TDD architecture, and Rust maintenance.
+- Installable starter cartridges published as separate `JMoak/craft-*` repositories.
 - CI for format, clippy, and tests.
 
 ## Quickstart
@@ -122,17 +122,19 @@ Start the `craft.toml` language server over stdio:
 craft lsp
 ```
 
-The current server supports LSP `initialize`, `shutdown`, manifest diagnostics for opened or saved documents, completion labels for known CRAFT sections and fields, and a null-safe definition response. It is intentionally dependency-light so editor integration can land before a fuller LSP stack is introduced.
+The current server supports LSP `initialize`, `shutdown`, manifest diagnostics for opened or saved documents, completion labels for known CRAFT sections and fields, and a null-safe definition response. The protocol adapter lives in `craft-lsp` so editor integration can grow without bloating the CLI binary.
 
 ## Starter Cartridges
 
-Example harness cartridges live in `examples/cartridges/`:
+Starter harness cartridges live in their own repositories so they can be installed, versioned, validated, and evolved independently from CRAFT Core:
 
-- `godot-designer` for Godot 4 gameplay and scene review.
-- `tdd-architect` for turning feature intent into executable behavior contracts.
-- `rust-maintainer` for Rust review, maintenance, and release hygiene.
+- [`craft-godot-designer`](https://github.com/Rosavera-I/craft-godot-designer) for Godot 4 gameplay and scene review.
+- [`craft-tdd-architect`](https://github.com/Rosavera-I/craft-tdd-architect) for turning feature intent into executable behavior contracts.
+- [`craft-rust-maintainer`](https://github.com/Rosavera-I/craft-rust-maintainer) for Rust review, maintenance, and release hygiene.
 
-Each cartridge includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be validated and composed like a normal harness.
+Each cartridge repo includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be installed and composed like any other harness.
+
+See `docs/CARTRIDGE-STARTERS.md` for the five-cartridge dogfood plan and split-out order.
 
 ## Memory Store
 

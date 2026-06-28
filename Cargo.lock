@@ -41,7 +41,7 @@ name = "craft-cli"
 version = "0.1.0"
 dependencies = [
  "craft-core",
- "craft-manifest",
+ "craft-lsp",
  "craft-memory",
 ]
 
@@ -51,6 +51,13 @@ version = "0.1.0"
 dependencies = [
  "craft-manifest",
  "rusqlite",
+]
+
+[[package]]
+name = "craft-lsp"
+version = "0.1.0"
+dependencies = [
+ "craft-manifest",
 ]
 
 [[package]]

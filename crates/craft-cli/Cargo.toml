@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 craft-core = { path = "../craft-core" }
-craft-manifest = { path = "../craft-manifest" }
+craft-lsp = { path = "../craft-lsp" }
 craft-memory = { path = "../craft-memory" }
 
 [lints]
