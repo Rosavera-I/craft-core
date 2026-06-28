@@ -54,7 +54,7 @@ sequenceDiagram
     Core->>Git: git clone --depth 1
     Core->>Core: load and validate craft.toml
     Core->>Reg: upsert installed harness
-    Dev->>CLI: craft compose a b --plan
+    Dev->>CLI: craft compose-plan a b
     CLI->>Core: plan_composition(names)
     Core->>Reg: resolve installed harnesses
     Core-->>CLI: ordered merge plan and warnings
@@ -67,7 +67,7 @@ sequenceDiagram
     CLI->>Runtime: ollama run model prompt
 ```
 
-`craft compose --plan` is the safe inspection path for cartridge stacks. It performs the same registry and manifest resolution as `craft compose`, reports the `ordered-merge` strategy, lists artifact paths per harness, and returns duplicate-harness warnings without writing `craft.compose.toml`.
+`craft compose-plan` is the safe inspection path for cartridge stacks. It performs the same registry and manifest resolution as `craft compose`, reports the `ordered-merge` strategy, lists artifact paths per harness, and returns duplicate-harness warnings without writing `craft.compose.toml`. `craft compose --plan` is kept as the compatibility spelling.
 
 ## Composition Contract
 

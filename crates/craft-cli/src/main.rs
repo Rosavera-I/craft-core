@@ -127,6 +127,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
         }
         Some("harness") => harness_command(&args[1..]),
         Some("compose") => compose_command(&args[1..]),
+        Some("compose-plan") => compose_plan_command(&args[1..]),
         Some("run") => run_compose_command(&args[1..]),
         Some("lsp") => lsp_command(),
         Some("validate") => validate_command(&args[1..]),
@@ -151,6 +152,7 @@ Usage:
   craft harness test <name>
   craft harness uninstall <name>
   craft compose <harness> [harness...] [-o craft.compose.toml] [--plan]
+  craft compose-plan <harness> [harness...]
   craft run [craft.compose.toml] --model <model> [--runtime ollama] [--prompt <text>]
   craft lsp             Start the craft.toml language server on stdio
   craft validate [path]   Validate a harness manifest and TDD checks
@@ -370,6 +372,39 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
         eprintln!("warning: {warning}");
     }
     println!("wrote {}", result.output_path.display());
+    Ok(())
+}
+
+fn compose_plan_command(args: &[String]) -> Result<(), CliError> {
+    if args.is_empty() {
+        return Err(CliError::usage(
+            "usage: craft compose-plan <harness> [harness...]",
+        ));
+    }
+
+    let mut names = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--plan" | "--dry-run" => {
+                index += 1;
+            }
+            "-o" | "--output" => {
+                return Err(CliError::usage(
+                    "craft compose-plan never writes output; remove -o/--output",
+                ));
+            }
+            value => {
+                names.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    let manager = HarnessManager::new(CraftHome::from_env()?);
+    let registry = manager.registry()?;
+    let plan = plan_composition(&registry, &names)?;
+    print_composition_plan(&plan);
     Ok(())
 }
 
