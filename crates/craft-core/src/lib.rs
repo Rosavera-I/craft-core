@@ -164,13 +164,13 @@ pub struct ValidationResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ComposeArtifact {
-    harness: InstalledHarness,
-    manifest: Manifest,
-    system_prompt: String,
-    memory_schema: String,
-    mcp_tools: String,
-    tdd_validators: String,
+pub struct ComposeArtifact {
+    pub harness: InstalledHarness,
+    pub manifest: Manifest,
+    pub system_prompt: String,
+    pub memory_schema: String,
+    pub mcp_tools: String,
+    pub tdd_validators: String,
 }
 
 #[derive(Debug)]
@@ -457,7 +457,7 @@ pub fn plan_composition(
     })
 }
 
-fn collect_compose_artifacts(
+pub fn collect_compose_artifacts(
     registry: &HarnessRegistry,
     harness_names: &[String],
 ) -> Result<(Vec<ComposeArtifact>, Vec<String>), CraftError> {
@@ -927,6 +927,44 @@ mod tests {
     }
 
     #[test]
+    fn compose_artifacts_collects_harness_sources() {
+        let root = temp_root("craft-compose-artifacts");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        create_harness(&root, "godot-designer");
+        registry
+            .upsert(&InstalledHarness {
+                name: "godot-designer".to_string(),
+                version: "0.1.0".to_string(),
+                source: "github:JMoak/craft-godot-designer".to_string(),
+                path: root.join("godot-designer"),
+            })
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        let (artifacts, warnings) =
+            collect_compose_artifacts(&registry, &["godot-designer".to_string()])
+                .unwrap_or_else(|err| panic!("{err}"));
+
+        assert!(warnings.is_empty());
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].manifest.harness.name, "godot-designer");
+        assert_eq!(
+            artifacts[0].harness.source,
+            "github:JMoak/craft-godot-designer"
+        );
+        assert!(artifacts[0].system_prompt.contains("godot-designer"));
+        assert!(
+            artifacts[0]
+                .memory_schema
+                .contains("owner = \"godot-designer\"")
+        );
+        assert!(artifacts[0].mcp_tools.contains("godot-designer-tools"));
+        assert!(artifacts[0].tdd_validators.contains("check godot-designer"));
+
+        fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
     fn composition_plan_warns_for_duplicate_harness_names() {
         let root = temp_root("craft-compose-duplicates");
         let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
@@ -949,6 +987,7 @@ mod tests {
 
         assert_eq!(result.harnesses.len(), 2);
         assert!(result.warnings[0].contains("appears more than once"));
+        assert!(result.warnings[0].contains("github:JMoak/craft-godot-designer"));
 
         fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
     }

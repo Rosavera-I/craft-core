@@ -13,7 +13,7 @@ This repository currently provides:
 - A `craft.toml` manifest parser and validator.
 - GitHub harness installation into `~/.craft/harnesses`.
 - A persistent SQLite harness registry at `~/.craft/registry.sqlite3`.
-- `craft compose` output that merges prompt, memory, MCP tool, and validator artifacts with ordered conflict warnings.
+- `craft compose` output plus `craft compose-plan` dry runs that merge prompt, memory, MCP tool, and validator artifacts with ordered conflict warnings.
 - `craft validate` and `craft harness test <name>` for manifest checks plus `tdd-dsl` validator execution.
 - A minimal `craft lsp` stdio language server for `craft.toml` diagnostics and manifest completions.
 - A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
@@ -77,11 +77,12 @@ Validation first checks `craft.toml` and referenced artifacts. If `validators/ch
 Compose multiple installed harnesses into a generated config:
 
 ```sh
+craft compose-plan godot-designer roguelike-specialist
 craft compose godot-designer roguelike-specialist --plan
 craft compose godot-designer roguelike-specialist -o craft.compose.toml
 ```
 
-`--plan` previews the ordered merge without writing a compose file. It lists each harness source, artifact paths, merge strategy, and warnings such as duplicate harness entries.
+`compose-plan` previews the ordered merge without writing a compose file. It lists each harness source, artifact paths, merge strategy, and warnings such as duplicate harness entries. `craft compose --plan` remains available as the compatibility spelling.
 
 The generated `craft.compose.toml` includes harness metadata plus merged artifacts:
 
