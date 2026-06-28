@@ -6,7 +6,7 @@ Starter cartridges should prove that CRAFT harnesses are useful as installable e
 
 1. `craft-tdd-architect`
 2. `craft-godot-designer`
-3. `craft-rust-craftsman`
+3. `craft-rust-maintainer`
 4. `craft-codebase-cartographer`
 5. `craft-security-reviewer`
 
@@ -32,11 +32,11 @@ Core idea: Godot 4 gameplay and systems design harness aligned with Jordan's ind
 - Validators: rejects Unity-style lifecycle advice, requires scene/script ownership notes, requires test or manual verification plan.
 - Acceptance: validates locally and can review a scene/system prompt without losing Godot-specific constraints.
 
-## `craft-rust-craftsman`
+## `craft-rust-maintainer`
 
 Core idea: Rust implementation partner for small CLI/workspace crates like CRAFT itself.
 
-- Repo: `Rosavera-I/craft-rust-craftsman`.
+- Repo: `Rosavera-I/craft-rust-maintainer`.
 - Prompt: std-first, explicit error types, narrow tests, fmt/test/clippy gates.
 - Memory schema: crate boundaries, lint policy, dependency policy, release target.
 - Tools: cargo, rustfmt, clippy, filesystem.
