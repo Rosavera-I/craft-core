@@ -47,8 +47,8 @@ validators/checks.tdd
 Install a harness from GitHub:
 
 ```sh
-craft harness install github:JMoak/craft-godot-designer
-craft harness install github:JMoak/craft-godot-designer@v0.1.0
+craft harness install github:Rosavera-I/craft-godot-designer
+craft harness install github:Rosavera-I/craft-godot-designer@v0.1.0
 ```
 
 Inspect and remove installed harnesses:
