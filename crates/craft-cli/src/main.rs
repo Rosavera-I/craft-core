@@ -6,7 +6,7 @@ use std::process::{Command, ExitCode};
 
 use craft_core::{
     CraftError, CraftHome, GithubSource, HarnessManager, ValidationResult, compose_harnesses,
-    test_installed_harness, validate_harness_project,
+    plan_composition, test_installed_harness, validate_harness_project,
 };
 use craft_memory::{Memory, MemoryError, MemoryScope};
 
@@ -150,7 +150,7 @@ Usage:
   craft harness info <name>
   craft harness test <name>
   craft harness uninstall <name>
-  craft compose <harness> [harness...] [-o craft.compose.toml]
+  craft compose <harness> [harness...] [-o craft.compose.toml] [--plan]
   craft run [craft.compose.toml] --model <model> [--runtime ollama] [--prompt <text>]
   craft lsp             Start the craft.toml language server on stdio
   craft validate [path]   Validate a harness manifest and TDD checks
@@ -329,15 +329,20 @@ fn print_validation_result(result: &ValidationResult) {
 fn compose_command(args: &[String]) -> Result<(), CliError> {
     if args.is_empty() {
         return Err(CliError::usage(
-            "usage: craft compose <harness> [harness...] [-o craft.compose.toml]",
+            "usage: craft compose <harness> [harness...] [-o craft.compose.toml] [--plan]",
         ));
     }
 
     let mut names = Vec::new();
     let mut output = PathBuf::from("craft.compose.toml");
+    let mut show_plan = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--plan" | "--dry-run" => {
+                show_plan = true;
+                index += 1;
+            }
             "-o" | "--output" => {
                 let value = args
                     .get(index + 1)
@@ -354,12 +359,46 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
 
     let manager = HarnessManager::new(CraftHome::from_env()?);
     let registry = manager.registry()?;
+    if show_plan {
+        let plan = plan_composition(&registry, &names)?;
+        print_composition_plan(&plan);
+        return Ok(());
+    }
+
     let result = compose_harnesses(&registry, &names, &output)?;
     for warning in result.warnings {
         eprintln!("warning: {warning}");
     }
     println!("wrote {}", result.output_path.display());
     Ok(())
+}
+
+fn print_composition_plan(plan: &craft_core::CompositionPlan) {
+    println!("composition plan");
+    println!("strategy: {}", plan.strategy);
+    println!("harnesses:");
+    for harness in &plan.harnesses {
+        println!(
+            "- {} {} ({})",
+            harness.name, harness.version, harness.source
+        );
+        println!("  path: {}", harness.path.display());
+        println!("  prompt: {}", harness.prompt_path.display());
+        println!("  memory: {}", harness.memory_schema_path.display());
+        println!("  tools: {}", harness.mcp_tools_path.display());
+        println!("  validators: {}", harness.tdd_validators_path.display());
+    }
+    println!("merge:");
+    println!("- prompts.system: concatenated in listed order");
+    println!("- memory.schemas: namespaced by harness name");
+    println!("- tools.mcp: namespaced by harness name");
+    println!("- validators.tdd: namespaced by harness name");
+    if !plan.warnings.is_empty() {
+        println!("warnings:");
+        for warning in &plan.warnings {
+            println!("- {warning}");
+        }
+    }
 }
 
 fn run_compose_command(args: &[String]) -> Result<(), CliError> {

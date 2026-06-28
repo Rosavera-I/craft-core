@@ -137,6 +137,25 @@ pub struct ComposeResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompositionPlan {
+    pub strategy: String,
+    pub harnesses: Vec<CompositionHarness>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompositionHarness {
+    pub name: String,
+    pub version: String,
+    pub source: String,
+    pub path: PathBuf,
+    pub prompt_path: PathBuf,
+    pub memory_schema_path: PathBuf,
+    pub mcp_tools_path: PathBuf,
+    pub tdd_validators_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationResult {
     pub harness_name: String,
     pub tdd_path: PathBuf,
@@ -400,6 +419,48 @@ pub fn compose_harnesses(
     harness_names: &[String],
     output_path: impl AsRef<Path>,
 ) -> Result<ComposeResult, CraftError> {
+    let (artifacts, warnings) = collect_compose_artifacts(registry, harness_names)?;
+    let contents = render_compose(&artifacts, &warnings);
+    let output_path = output_path.as_ref().to_path_buf();
+    fs::write(&output_path, contents)?;
+    Ok(ComposeResult {
+        output_path,
+        warnings,
+    })
+}
+
+pub fn plan_composition(
+    registry: &HarnessRegistry,
+    harness_names: &[String],
+) -> Result<CompositionPlan, CraftError> {
+    let (artifacts, warnings) = collect_compose_artifacts(registry, harness_names)?;
+    Ok(CompositionPlan {
+        strategy: "ordered-merge".to_string(),
+        harnesses: artifacts
+            .into_iter()
+            .map(|artifact| {
+                let path = artifact.harness.path;
+                let manifest = artifact.manifest;
+                CompositionHarness {
+                    name: manifest.harness.name,
+                    version: manifest.harness.version,
+                    source: artifact.harness.source,
+                    prompt_path: path.join(manifest.prompts.system),
+                    memory_schema_path: path.join(manifest.memory.schema),
+                    mcp_tools_path: path.join(manifest.tools.mcp),
+                    tdd_validators_path: path.join(manifest.validators.tdd),
+                    path,
+                }
+            })
+            .collect(),
+        warnings,
+    })
+}
+
+fn collect_compose_artifacts(
+    registry: &HarnessRegistry,
+    harness_names: &[String],
+) -> Result<(Vec<ComposeArtifact>, Vec<String>), CraftError> {
     if harness_names.is_empty() {
         return Err(CraftError::InvalidName(
             "compose requires at least one harness".to_string(),
@@ -408,36 +469,15 @@ pub fn compose_harnesses(
 
     let mut artifacts = Vec::new();
     let mut warnings = Vec::new();
-    let mut prompts = BTreeMap::new();
-    let mut memory_schemas = BTreeMap::new();
-    let mut tool_bindings = BTreeMap::new();
-    let mut validators = BTreeMap::new();
+    let mut seen_harnesses = BTreeMap::new();
 
     for name in harness_names {
         let installed = registry.info(name)?;
         let manifest = load_manifest(installed.path.join("craft.toml"))?;
-        note_conflict(
-            &mut prompts,
-            "prompts.system",
+        note_duplicate_harness(
+            &mut seen_harnesses,
             &manifest.harness.name,
-            &mut warnings,
-        );
-        note_conflict(
-            &mut memory_schemas,
-            "memory.schemas",
-            &manifest.harness.name,
-            &mut warnings,
-        );
-        note_conflict(
-            &mut tool_bindings,
-            "tools.mcp",
-            &manifest.harness.name,
-            &mut warnings,
-        );
-        note_conflict(
-            &mut validators,
-            "validators.tdd",
-            &manifest.harness.name,
+            &installed.source,
             &mut warnings,
         );
 
@@ -451,13 +491,7 @@ pub fn compose_harnesses(
         });
     }
 
-    let contents = render_compose(&artifacts, &warnings);
-    let output_path = output_path.as_ref().to_path_buf();
-    fs::write(&output_path, contents)?;
-    Ok(ComposeResult {
-        output_path,
-        warnings,
-    })
+    Ok((artifacts, warnings))
 }
 
 pub fn validate_harness_project(root: impl AsRef<Path>) -> Result<ValidationResult, CraftError> {
@@ -749,15 +783,15 @@ fn validate_harness_name(name: &str) -> Result<(), CraftError> {
     }
 }
 
-fn note_conflict(
+fn note_duplicate_harness(
     seen: &mut BTreeMap<String, String>,
-    key: &str,
     harness_name: &str,
+    source: &str,
     warnings: &mut Vec<String>,
 ) {
-    if let Some(previous) = seen.insert(key.to_string(), harness_name.to_string()) {
+    if let Some(previous) = seen.insert(harness_name.to_string(), source.to_string()) {
         warnings.push(format!(
-            "`{key}` from `{harness_name}` overrides earlier value from `{previous}`"
+            "harness `{harness_name}` appears more than once; later source `{source}` follows earlier `{previous}`"
         ));
     }
 }
@@ -841,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_writes_merged_config_with_warnings() {
+    fn compose_writes_merged_config() {
         let root = temp_root("craft-compose");
         let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
             .unwrap_or_else(|err| panic!("{err}"));
@@ -887,7 +921,34 @@ mod tests {
         assert!(contents.contains("name = \\\"godot-designer-tools\\\""));
         assert!(contents.contains("[validators.tdd]"));
         assert!(contents.contains("check godot-designer"));
-        assert!(!result.warnings.is_empty());
+        assert!(result.warnings.is_empty());
+
+        fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn composition_plan_warns_for_duplicate_harness_names() {
+        let root = temp_root("craft-compose-duplicates");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        create_harness(&root, "godot-designer");
+        registry
+            .upsert(&InstalledHarness {
+                name: "godot-designer".to_string(),
+                version: "0.1.0".to_string(),
+                source: "github:JMoak/craft-godot-designer".to_string(),
+                path: root.join("godot-designer"),
+            })
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        let result = plan_composition(
+            &registry,
+            &["godot-designer".to_string(), "godot-designer".to_string()],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        assert_eq!(result.harnesses.len(), 2);
+        assert!(result.warnings[0].contains("appears more than once"));
 
         fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
     }
