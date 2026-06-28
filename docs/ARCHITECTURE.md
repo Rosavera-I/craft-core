@@ -1,44 +1,100 @@
 # CRAFT Architecture
 
-CRAFT separates the core runtime from individual harness repositories.
+> Composable Runtime for Agentic Framework Tooling
+
+CRAFT separates the core runtime from individual harness repositories, enabling versioned, installable expertise packages.
+
+---
 
 ## System Map
 
 ```mermaid
 flowchart LR
-    User[Developer] --> CLI[craft-cli]
-    CLI --> Core[craft-core]
-    CLI --> LSP[craft-lsp]
-    CLI --> Memory[craft-memory]
-    Core --> Manifest[craft-manifest]
-    Core --> Registry[(registry.sqlite3)]
-    Core --> Harnesses[~/.craft/harnesses]
-    Harnesses --> CartridgeA[craft-godot-designer]
-    Harnesses --> CartridgeB[craft-tdd-architect]
-    Harnesses --> CartridgeC[craft-rust-maintainer]
-    Core --> Compose[craft.compose.toml]
-    Compose --> Runtime[Local runtime: ollama-compatible]
-    Memory --> MemoryDb[(memory.sqlite3)]
-    Memory --> Logs[JSONL event logs]
-    LSP --> Editor[Editor diagnostics and completions]
+    User[👤 Developer] --> CLI[⚡ craft-cli]
+    CLI --> Core[🔧 craft-core]
+    CLI --> LSP[📝 craft-lsp]
+    CLI --> Memory[🧠 craft-memory]
+    Core --> Manifest[📋 craft-manifest]
+    Core --> Registry[(🗄️ registry.sqlite3)]
+    Core --> Harnesses[📁 ~/.craft/harnesses]
+    Harnesses --> CartridgeA[🎮 craft-godot-designer]
+    Harnesses --> CartridgeB[🧪 craft-tdd-architect]
+    Harnesses --> CartridgeC[🦀 craft-rust-maintainer]
+    Core --> Compose[📄 craft.compose.toml]
+    Compose --> Runtime[🤖 Local Runtime<br/>ollama-compatible]
+    Memory --> MemoryDb[(🗃️ memory.sqlite3)]
+    Memory --> Logs[📜 JSONL event logs]
+    LSP --> Editor[💻 Editor<br/>diagnostics + completions]
 ```
 
-The CLI is the integration point. The library crates keep manifest parsing, harness loading, memory persistence, and LSP behavior separate so each surface can mature without turning the command binary into the architecture.
+The CLI is the integration point. Library crates keep manifest parsing, harness loading, memory persistence, and LSP behavior separate so each surface can mature without bloating the command binary.
 
-## Repositories
+---
 
-- `craft-core`: CLI, manifest model, composition engine, memory interfaces, runners, and developer tooling.
-- `craft-<harness>`: one repository per expertise harness.
+## In Five Commands
 
-## Crates
+```bash
+# 1. Initialize CRAFT in your project
+craft init
 
-- `craft-cli`: command-line entry point.
-- `craft-manifest`: `craft.toml` parsing and validation.
-- `craft-core`: harness project loading and future composition APIs.
-- `craft-lsp`: stdio language-server protocol adapter for `craft.toml`.
-- `craft-memory`: scoped SQLite memory store and JSONL event log.
+# 2. Install a harness from GitHub
+craft harness install github:Rosavera-I/craft-rust-maintainer
 
-## Install, Compose, Run
+# 3. Plan composition before running
+craft compose-plan rust-maintainer tdd-architect
+
+# 4. Compose into a merged config
+craft compose rust-maintainer tdd-architect -o craft.compose.toml
+
+# 5. Run with your local LLM
+craft run craft.compose.toml --model llama3.1:8b --prompt "Review error handling"
+```
+
+---
+
+## Crate Structure
+
+| Crate | Responsibility | API Surface |
+|-------|---------------|-------------|
+| `craft-cli` | Command-line parsing, user-facing errors | Binary only |
+| `craft-core` | Harness loading, composition, validation | `HarnessManager`, `compose_harnesses` |
+| `craft-manifest` | `craft.toml` parsing, semver validation | `load_manifest`, `Manifest` |
+| `craft-lsp` | LSP stdio adapter for editor integration | `run_lsp_server` |
+| `craft-memory` | SQLite facts, FTS search, JSONL events | `Memory::record`, `Memory::recall` |
+
+---
+
+## Harness Anatomy
+
+Each cartridge is a git repository with a standard layout:
+
+```mermaid
+flowchart TB
+    subgraph Cartridge[craft-{name} Repository]
+        direction TB
+        Manifest["📄 craft.toml<br/>name, version, description"]
+        Prompts["📝 prompts/system.md<br/>system prompt"]
+        Memory["🧠 memory/schema.toml<br/>facts + events schema"]
+        Tools["🔧 tools/mcp.toml<br/>MCP server definitions"]
+        Validators["✅ validators/checks.tdd<br/>TDD validation rules"]
+        
+        Manifest --> Prompts
+        Manifest --> Memory
+        Manifest --> Tools
+        Manifest --> Validators
+    end
+    
+    subgraph Install["Installation"]
+        Git["git clone"] --> Validate["craft validate"]
+        Validate --> Registry["registry.sqlite3"]
+    end
+    
+    Cartridge --> Git
+```
+
+---
+
+## Install → Compose → Run
 
 ```mermaid
 sequenceDiagram
@@ -49,82 +105,155 @@ sequenceDiagram
     participant Reg as registry.sqlite3
     participant Runtime as Local runtime
 
-    Dev->>CLI: craft harness install github:owner/repo[@ref]
+    Note over Dev,Runtime: Phase 1: Install
+    Dev->>CLI: harness install github:owner/repo[@ref]
     CLI->>Core: parse GithubSource
     Core->>Git: git clone --depth 1
-    Core->>Core: load and validate craft.toml
+    Core->>Core: load & validate craft.toml
     Core->>Reg: upsert installed harness
-    Dev->>CLI: craft compose-plan a b
+    Core-->>CLI: installed {name} v{version}
+    
+    Note over Dev,Runtime: Phase 2: Plan (dry-run)
+    Dev->>CLI: compose-plan rust-maintainer tdd-architect
     CLI->>Core: plan_composition(names)
-    Core->>Reg: resolve installed harnesses
-    Core-->>CLI: ordered merge plan and warnings
-    Dev->>CLI: craft compose a b -o craft.compose.toml
+    Core->>Reg: resolve harnesses
+    Core-->>CLI: ordered-merge plan + warnings
+    
+    Note over Dev,Runtime: Phase 3: Compose
+    Dev->>CLI: compose a b -o craft.compose.toml
     CLI->>Core: compose_harnesses(names, output)
-    Core->>Reg: resolve installed harnesses
-    Core->>Core: merge prompt, memory, tools, validators
-    Core-->>CLI: write compose file
-    Dev->>CLI: craft run craft.compose.toml --model llama3.1:8b
-    CLI->>Runtime: ollama run model prompt
+    Core->>Reg: resolve harnesses
+    Core->>Core: merge prompts, memory, tools, validators
+    Core-->>CLI: write craft.compose.toml
+    
+    Note over Dev,Runtime: Phase 4: Run
+    Dev->>CLI: run craft.compose.toml --model llama3.1:8b
+    CLI->>Runtime: ollama run model + system prompt + user prompt
+    Runtime-->>CLI: generated response
 ```
 
-`craft compose-plan` is the safe inspection path for cartridge stacks. It performs the same registry and manifest resolution as `craft compose`, reports the `ordered-merge` strategy, lists artifact paths per harness, and returns duplicate-harness warnings without writing `craft.compose.toml`. `craft compose --plan` is kept as the compatibility spelling.
+`compose-plan` is the safe inspection path. It performs the same resolution as `compose` but returns the plan without writing files. Use it to preview warnings and harness ordering before committing to a composition.
+
+---
 
 ## Composition Contract
 
 ```mermaid
 flowchart TB
     subgraph Inputs[Installed Harnesses]
-        H1[Harness A<br/>craft.toml]
-        H2[Harness B<br/>craft.toml]
-        H3[Harness C<br/>craft.toml]
+        H1["🎮 Harness A<br/>prompts/system.md"]
+        H2["🧪 Harness B<br/>prompts/system.md"]
+        H3["🦀 Harness C<br/>prompts/system.md"]
     end
-
-    H1 --> PromptMerge[prompts.system<br/>concatenate in CLI order]
+    
+    subgraph Merge[Merge Strategy: Ordered]
+        PromptMerge["📝 prompts.system<br/>concatenate in CLI order"]
+        MemoryMerge["🧠 memory.schemas<br/>namespace by harness name"]
+        ToolMerge["🔧 tools.mcp<br/>namespace by harness name"]
+        ValidatorMerge["✅ validators.tdd<br/>namespace by harness name"]
+    end
+    
+    subgraph Output[craft.compose.toml]
+        P["[prompts]<br/>system = '...'"]
+        M["[memory.schemas]<br/>\"a\" = '...'"]
+        T["[tools.mcp]<br/>\"a\" = '...'"]
+        V["[validators.tdd]<br/>\"a\" = '...'"]
+    end
+    
+    H1 --> PromptMerge
     H2 --> PromptMerge
     H3 --> PromptMerge
-
-    H1 --> MemoryMerge[memory.schemas<br/>namespace by harness name]
+    
+    H1 --> MemoryMerge
     H2 --> MemoryMerge
     H3 --> MemoryMerge
-
-    H1 --> ToolMerge[tools.mcp<br/>namespace by harness name]
+    
+    H1 --> ToolMerge
     H2 --> ToolMerge
     H3 --> ToolMerge
-
-    H1 --> ValidatorMerge[validators.tdd<br/>namespace by harness name]
+    
+    H1 --> ValidatorMerge
     H2 --> ValidatorMerge
     H3 --> ValidatorMerge
-
-    PromptMerge --> Output[craft.compose.toml]
-    MemoryMerge --> Output
-    ToolMerge --> Output
-    ValidatorMerge --> Output
+    
+    PromptMerge --> P
+    MemoryMerge --> M
+    ToolMerge --> T
+    ValidatorMerge --> V
 ```
 
-Composition deliberately treats prompt order as meaningful and keeps non-prompt artifacts namespaced. That keeps source ownership visible for runners and avoids silently flattening memory schemas, MCP bindings, or validators from multiple cartridges.
+**Key rule:** Prompts concatenate in order (later harnesses extend earlier ones). All other artifacts are namespaced by harness name to preserve source ownership.
 
-## Memory Flow
+---
+
+## Memory Architecture
 
 ```mermaid
 flowchart LR
-    CLI[craft memory] --> API[craft-memory API]
-    API --> Validate[scope and key validation]
-    Validate --> Tx[SQLite transaction]
-    Tx --> Facts[(facts + facts_fts)]
-    Tx --> Events[(events)]
-    Tx --> Audit[(audit_log)]
-    Events --> Jsonl[logs/events-YYYY-MM-DD.jsonl]
-    Facts --> Recall[recall/search/context]
-    Audit --> Review[operational audit trail]
+    CLI["💻 craft memory<br/>log | record | recall | search"] --> API["🧠 craft-memory API"]
+    API --> Validate["🔍 Validate scope + key"]
+    Validate --> Tx["🔄 SQLite Transaction"]
+    
+    Tx --> Facts["📊 facts + facts_fts<br/>(full-text search)"]
+    Tx --> Events["📋 events<br/>(replayable log)"]
+    Tx --> Audit["🛡️ audit_log<br/>(operational trail)"]
+    
+    Events --> Jsonl["📁 logs/events-*.jsonl<br/>(daily rotation)"]
+    Facts --> Recall["🔎 recall / search / context"]
+    Audit --> Review["📈 operational audit"]
+    
+    Recall --> Runner["🤖 Runner<br/>(bounded context for LLM)"]
 ```
 
-Facts are stored in SQLite, indexed through FTS, and mirrored by replayable events. `memory context` assembles scoped facts in deterministic priority order so future runners can request bounded context without knowing the storage layout.
+`memory context` assembles facts in scope-priority order so runners receive relevant context without knowing the storage layout. Events append to both SQLite and JSONL for replay and audit.
+
+---
+
+## Command Reference
+
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `init` | Create `.craft/` scaffold | `craft init` |
+| `harness install` | Install from GitHub | `craft harness install github:owner/repo` |
+| `harness list` | Show installed harnesses | `craft harness list` |
+| `harness test` | Run TDD validators | `craft harness test rust-maintainer` |
+| `compose-plan` | Preview composition | `craft compose-plan a b` |
+| `compose` | Write merged config | `craft compose a b -o out.toml` |
+| `run` | Execute with LLM | `craft run out.toml --model llama3.1:8b` |
+| `validate` | Validate harness project | `craft validate ./my-harness` |
+| `memory` | Record/recall facts | `craft memory log project lang rust` |
+| `lsp` | Language server | `craft lsp` |
+| `doctor` | Health check | `craft doctor` |
+
+---
+
+## Data Directory Layout
+
+```text
+~/.craft/
+├── harnesses/
+│   ├── godot-designer/
+│   │   ├── craft.toml
+│   │   ├── prompts/system.md
+│   │   └── ...
+│   └── rust-maintainer/
+│       └── ...
+├── memory.sqlite3
+├── registry.sqlite3
+└── logs/
+    └── events-2026-06-28.jsonl
+```
+
+---
 
 ## Milestone Path
 
-1. Foundation: buildable workspace, CLI, manifest validation.
-2. Harness discovery: install/list/info/uninstall harness repos.
-3. Memory: SQLite plus JSONL event log with scoped retrieval.
-4. Runner: local model adapters and tool bindings.
-5. Validation: `tdd-dsl` powered harness tests.
-6. Developer experience: `craft.toml` LSP diagnostics, completions, and harness navigation.
+| Phase | Status | Deliverable |
+|-------|--------|-------------|
+| Foundation | ✅ | Buildable workspace, CLI, manifest validation |
+| Harness Discovery | ✅ | install/list/info/uninstall from GitHub |
+| Memory | ✅ | SQLite + JSONL with scoped retrieval |
+| Runner | ✅ | Local model adapters (ollama-compatible) |
+| Validation | ✅ | `tdd-dsl` powered harness tests |
+| Developer Experience | 🔄 | LSP diagnostics, completions, harness navigation |
+| Distribution | 📋 | crates.io publish, homebrew tap |
