@@ -128,9 +128,9 @@ The current server supports LSP `initialize`, `shutdown`, manifest diagnostics f
 
 Starter harness cartridges live in their own repositories so they can be installed, versioned, validated, and evolved independently from CRAFT Core:
 
-- `JMoak/craft-godot-designer` for Godot 4 gameplay and scene review.
-- `JMoak/craft-tdd-architect` for turning feature intent into executable behavior contracts.
-- `JMoak/craft-rust-maintainer` for Rust review, maintenance, and release hygiene.
+- [`craft-godot-designer`](https://github.com/Rosavera-I/craft-godot-designer) for Godot 4 gameplay and scene review.
+- [`craft-tdd-architect`](https://github.com/Rosavera-I/craft-tdd-architect) for turning feature intent into executable behavior contracts.
+- [`craft-rust-maintainer`](https://github.com/Rosavera-I/craft-rust-maintainer) for Rust review, maintenance, and release hygiene.
 
 Each cartridge repo includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be installed and composed like any other harness.
 
