@@ -45,6 +45,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         Some("harness") => harness_command(&args[1..]),
         Some("compose") => compose_command(&args[1..]),
+        Some("run") => run_compose_command(&args[1..]),
         Some("validate") => validate_command(&args[1..]),
         Some("memory") => memory_command(&args[1..]),
         Some(command) => Err(format!(
@@ -67,6 +68,7 @@ Usage:
   craft harness test <name>
   craft harness uninstall <name>
   craft compose <harness> [harness...] [-o craft.compose.toml]
+  craft run [craft.compose.toml] --model <model> [--runtime ollama] [--prompt <text>]
   craft validate [path]   Validate a harness manifest and TDD checks
   craft memory log <scope> <key> <value>
   craft memory recall <scope> <key>
@@ -276,6 +278,111 @@ fn compose_command(args: &[String]) -> Result<(), String> {
     }
     println!("wrote {}", result.output_path.display());
     Ok(())
+}
+
+fn run_compose_command(args: &[String]) -> Result<(), String> {
+    let compose_path = args
+        .first()
+        .filter(|value| !value.starts_with('-'))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("craft.compose.toml"));
+    let model = required_flag(args, "--model")?;
+    let runtime = optional_flag(args, "--runtime").unwrap_or_else(|| "ollama".to_string());
+    let user_prompt = optional_flag(args, "--prompt");
+    let system_prompt = load_compose_system_prompt(&compose_path)?;
+    let prompt = runtime_prompt(&system_prompt, user_prompt.as_deref());
+
+    let status = Command::new(&runtime)
+        .arg("run")
+        .arg(&model)
+        .arg(prompt)
+        .status()
+        .map_err(|err| format!("failed to run {runtime}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{runtime} exited with status {status}"))
+    }
+}
+
+fn load_compose_system_prompt(path: &Path) -> Result<String, String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let mut section = String::new();
+    for raw_line in contents.lines() {
+        let line = strip_toml_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            section = name.trim().to_string();
+            continue;
+        }
+        if section == "prompts" {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if key.trim() == "system" {
+                return parse_toml_string(value.trim())
+                    .ok_or_else(|| "compose prompts.system must be a quoted string".to_string());
+            }
+        }
+    }
+    Err("compose file is missing [prompts].system".to_string())
+}
+
+fn runtime_prompt(system_prompt: &str, user_prompt: Option<&str>) -> String {
+    match user_prompt {
+        Some(prompt) if !prompt.trim().is_empty() => {
+            format!("System prompt:\n{system_prompt}\n\nUser prompt:\n{prompt}")
+        }
+        _ => system_prompt.to_string(),
+    }
+}
+
+fn strip_toml_comment(line: &str) -> &str {
+    let mut escaped = false;
+    let mut in_string = false;
+    for (index, character) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            '#' if !in_string => return &line[..index],
+            _ => {}
+        }
+    }
+    line
+}
+
+fn parse_toml_string(value: &str) -> Option<String> {
+    let inner = value.strip_prefix('"')?.strip_suffix('"')?;
+    let mut output = String::new();
+    let mut characters = inner.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            output.push(character);
+            continue;
+        }
+        match characters.next()? {
+            'n' => output.push('\n'),
+            'r' => output.push('\r'),
+            't' => output.push('\t'),
+            '"' => output.push('"'),
+            '\\' => output.push('\\'),
+            other => {
+                output.push('\\');
+                output.push(other);
+            }
+        }
+    }
+    Some(output)
 }
 
 fn memory_command(args: &[String]) -> Result<(), String> {

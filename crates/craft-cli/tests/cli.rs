@@ -182,6 +182,88 @@ fn harness_test_runs_installed_harness_tdd_checks() {
 }
 
 #[test]
+fn run_invokes_runtime_with_composed_system_prompt() {
+    let root = temp_root("craft-cli-run");
+    fs::create_dir_all(&root).unwrap_or_else(|err| panic!("{err}"));
+    let compose_path = root.join("craft.compose.toml");
+    fs::write(
+        &compose_path,
+        r#"[compose]
+strategy = "ordered-merge"
+harnesses = ["godot-designer"]
+
+[prompts]
+system = "System prompt for godot-designer\n"
+"#,
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let runtime = fake_runtime(&root);
+    let capture_path = root.join("runtime-args.txt");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("run")
+        .arg(&compose_path)
+        .arg("--model")
+        .arg("llama3.1:8b")
+        .arg("--runtime")
+        .arg(&runtime)
+        .env("CRAFT_TEST_RUNTIME_CAPTURE", &capture_path)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = fs::read_to_string(capture_path).unwrap_or_else(|err| panic!("{err}"));
+    assert!(args.contains("run"));
+    assert!(args.contains("llama3.1:8b"));
+    assert!(args.contains("System prompt for godot-designer"));
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
+fn run_combines_optional_user_prompt() {
+    let root = temp_root("craft-cli-run-prompt");
+    fs::create_dir_all(&root).unwrap_or_else(|err| panic!("{err}"));
+    let compose_path = root.join("craft.compose.toml");
+    fs::write(
+        &compose_path,
+        r#"[prompts]
+system = "System prompt\n"
+"#,
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let runtime = fake_runtime(&root);
+    let capture_path = root.join("runtime-args.txt");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .arg("run")
+        .arg(&compose_path)
+        .arg("--model")
+        .arg("qwen2.5:7b")
+        .arg("--runtime")
+        .arg(&runtime)
+        .arg("--prompt")
+        .arg("Design a test plan")
+        .env("CRAFT_TEST_RUNTIME_CAPTURE", &capture_path)
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = fs::read_to_string(capture_path).unwrap_or_else(|err| panic!("{err}"));
+    assert!(args.contains("System prompt:"));
+    assert!(args.contains("User prompt:"));
+    assert!(args.contains("Design a test plan"));
+
+    fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+}
+
+#[test]
 fn memory_commands_record_and_inspect_facts() {
     let root = temp_root("craft-cli-memory");
 
@@ -306,6 +388,23 @@ fn fake_tdd_dsl_bin(root: &Path) -> PathBuf {
     permissions.set_mode(0o755);
     fs::set_permissions(&binary, permissions).unwrap_or_else(|err| panic!("{err}"));
     bin_dir
+}
+
+fn fake_runtime(root: &Path) -> PathBuf {
+    let bin_dir = root.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap_or_else(|err| panic!("{err}"));
+    let binary = bin_dir.join("fake-runtime");
+    fs::write(
+        &binary,
+        "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\" > \"$CRAFT_TEST_RUNTIME_CAPTURE\"\n",
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let mut permissions = fs::metadata(&binary)
+        .unwrap_or_else(|err| panic!("{err}"))
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&binary, permissions).unwrap_or_else(|err| panic!("{err}"));
+    binary
 }
 
 fn path_with_prefix(prefix: &Path) -> OsString {

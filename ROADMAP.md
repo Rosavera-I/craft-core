@@ -21,7 +21,7 @@
 | Feature | Impact | Effort | Description |
 |---------|--------|--------|-------------|
 | **rusqlite Migration** | High | Medium | Replace shell-based SQLite with native rusqlite crate. Eliminates manual quoting risks, improves error handling, enables async operations. |
-| **craft run Command** | High | Medium | Execute composed harness configurations: `craft run craft.compose.toml --model llama3.1:8b`. Bridge to Ollama/local LLM runtimes. |
+| **craft run Command** | High | Medium | Execute composed harness configurations: `craft run craft.compose.toml --model llama3.1:8b`. Bridge to Ollama/local LLM runtimes. **Initial CLI runtime bridge implemented.** |
 | **Error Handling Hardening** | High | Low | Replace String errors with structured error types, add error codes, improve diagnostics. |
 
 ### P1: Important

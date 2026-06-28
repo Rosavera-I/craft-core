@@ -24,6 +24,7 @@ This repository currently provides:
 cargo run -p craft-cli -- init
 cargo run -p craft-cli -- doctor
 cargo run -p craft-cli -- harness list
+cargo run -p craft-cli -- run craft.compose.toml --model llama3.1:8b
 cargo test
 ```
 
@@ -100,6 +101,15 @@ system = "# Harness: godot-designer\n\n...\n\n# Harness: roguelike-specialist\n\
 Prompts are concatenated in command order. Memory schemas, MCP bindings, and TDD validators are namespaced by harness name so a runner can consume each artifact without losing source ownership.
 
 The registry uses SQLite. This dependency-light milestone calls the `sqlite3` CLI so the workspace remains buildable offline; the API is shaped so a future `rusqlite` backend can replace it without changing CLI behavior.
+
+Run a composed harness against a local runtime:
+
+```sh
+craft run craft.compose.toml --model llama3.1:8b --prompt "Review this Godot scene"
+craft run craft.compose.toml --model qwen2.5:7b --runtime ollama
+```
+
+`craft run` reads the merged `[prompts].system` value from `craft.compose.toml` and passes it to `ollama run <model>` by default. Use `--runtime` to point at another Ollama-compatible local runtime binary.
 
 ## Memory Store
 
