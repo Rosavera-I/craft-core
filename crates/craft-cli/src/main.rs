@@ -390,10 +390,7 @@ fn run_compose_command(args: &[String]) -> Result<(), CliError> {
 }
 
 fn lsp_command() -> Result<(), CliError> {
-    let mut input = String::new();
-    io::Read::read_to_string(&mut io::stdin(), &mut input)?;
-    print!("{}", craft_lsp::handle_input(&input));
-    Ok(())
+    craft_lsp::run_server(io::stdin().lock(), io::stdout().lock()).map_err(Into::into)
 }
 
 fn load_compose_system_prompt(path: &Path) -> Result<String, CliError> {

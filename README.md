@@ -8,7 +8,7 @@ CRAFT is a Rust-native foundation for local-model expertise harnesses: reusable 
 
 This repository currently provides:
 
-- A Rust workspace with `craft-cli`, `craft-core`, `craft-manifest`, and `craft-memory`.
+- A Rust workspace with `craft-cli`, `craft-core`, `craft-lsp`, `craft-manifest`, and `craft-memory`.
 - A `craft` CLI with `init`, `doctor`, `version`, harness registry commands, composition, and help output.
 - A `craft.toml` manifest parser and validator.
 - GitHub harness installation into `~/.craft/harnesses`.
@@ -122,7 +122,7 @@ Start the `craft.toml` language server over stdio:
 craft lsp
 ```
 
-The current server supports LSP `initialize`, `shutdown`, manifest diagnostics for opened or saved documents, completion labels for known CRAFT sections and fields, and a null-safe definition response. It is intentionally dependency-light so editor integration can land before a fuller LSP stack is introduced.
+The current server supports LSP `initialize`, `shutdown`, manifest diagnostics for opened or saved documents, completion labels for known CRAFT sections and fields, and a null-safe definition response. The protocol adapter lives in `craft-lsp` so editor integration can grow without bloating the CLI binary.
 
 ## Starter Cartridges
 
@@ -133,6 +133,8 @@ Example harness cartridges live in `examples/cartridges/`:
 - `rust-maintainer` for Rust review, maintenance, and release hygiene.
 
 Each cartridge includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be validated and composed like a normal harness.
+
+See `docs/CARTRIDGE-STARTERS.md` for the five-cartridge dogfood plan and split-out order.
 
 ## Memory Store
 
