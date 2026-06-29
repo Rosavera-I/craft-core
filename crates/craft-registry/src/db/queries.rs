@@ -295,6 +295,36 @@ pub async fn get_user_by_email(pool: &PgPool, email: &str) -> RegistryResult<Use
     Ok(user)
 }
 
+/// Create or update an SSO-backed user from GitHub profile data.
+pub async fn upsert_github_user(
+    pool: &PgPool,
+    github_login: &str,
+    email: &str,
+    display_name: Option<&str>,
+    avatar_url: Option<&str>,
+) -> RegistryResult<User> {
+    let user = sqlx::query_as::<_, User>(
+        r#"
+        INSERT INTO users (username, email, display_name, avatar_url, password_hash)
+        VALUES ($1, $2, $3, $4, NULL)
+        ON CONFLICT (email) DO UPDATE SET
+            username = EXCLUDED.username,
+            display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+            avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
+            last_login_at = NOW()
+        RETURNING *
+        "#,
+    )
+    .bind(github_login)
+    .bind(email)
+    .bind(display_name)
+    .bind(avatar_url)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(user)
+}
+
 /// Update last login timestamp
 pub async fn update_user_last_login(pool: &PgPool, id: Uuid) -> RegistryResult<()> {
     sqlx::query(r#"UPDATE users SET last_login_at = NOW() WHERE id = $1"#)
@@ -302,6 +332,175 @@ pub async fn update_user_last_login(pool: &PgPool, id: Uuid) -> RegistryResult<(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// List organization slugs for JWT claims.
+pub async fn list_user_org_slugs(pool: &PgPool, user_id: Uuid) -> RegistryResult<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT o.name
+        FROM organizations o
+        INNER JOIN org_members om ON om.org_id = o.id
+        WHERE om.user_id = $1 AND o.deleted_at IS NULL
+        ORDER BY o.name
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+/// List team slugs for JWT claims as org/team.
+pub async fn list_user_team_slugs(pool: &PgPool, user_id: Uuid) -> RegistryResult<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT o.name || '/' || t.name
+        FROM teams t
+        INNER JOIN organizations o ON o.id = t.org_id
+        INNER JOIN team_members tm ON tm.team_id = t.id
+        WHERE tm.user_id = $1 AND t.deleted_at IS NULL AND o.deleted_at IS NULL
+        ORDER BY o.name, t.name
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+// ============================================================================
+// Device Authorization Queries
+// ============================================================================
+
+/// Create a pending OAuth device authorization grant.
+pub async fn create_device_authorization(
+    pool: &PgPool,
+    device_code: &str,
+    user_code: &str,
+    client_id: &str,
+    expires_at: DateTime<Utc>,
+    interval_secs: i32,
+) -> RegistryResult<DeviceAuthorization> {
+    let grant = sqlx::query_as::<_, DeviceAuthorization>(
+        r#"
+        INSERT INTO device_authorizations
+            (device_code, user_code, client_id, expires_at, interval_secs)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        "#,
+    )
+    .bind(device_code)
+    .bind(user_code)
+    .bind(client_id)
+    .bind(expires_at)
+    .bind(interval_secs)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(grant)
+}
+
+/// Get a device authorization grant by device code.
+pub async fn get_device_authorization_by_device_code(
+    pool: &PgPool,
+    device_code: &str,
+) -> RegistryResult<DeviceAuthorization> {
+    let grant = sqlx::query_as::<_, DeviceAuthorization>(
+        r#"SELECT * FROM device_authorizations WHERE device_code = $1"#,
+    )
+    .bind(device_code)
+    .fetch_optional(pool)
+    .await?
+    .context("Device authorization not found")?;
+
+    Ok(grant)
+}
+
+/// Get a device authorization grant by user code.
+pub async fn get_device_authorization_by_user_code(
+    pool: &PgPool,
+    user_code: &str,
+) -> RegistryResult<DeviceAuthorization> {
+    let grant = sqlx::query_as::<_, DeviceAuthorization>(
+        r#"SELECT * FROM device_authorizations WHERE user_code = $1"#,
+    )
+    .bind(user_code)
+    .fetch_optional(pool)
+    .await?
+    .context("Device authorization not found")?;
+
+    Ok(grant)
+}
+
+/// Record a device poll attempt and optionally increase the poll interval.
+pub async fn record_device_poll(
+    pool: &PgPool,
+    id: Uuid,
+    interval_secs: i32,
+) -> RegistryResult<DeviceAuthorization> {
+    let grant = sqlx::query_as::<_, DeviceAuthorization>(
+        r#"
+        UPDATE device_authorizations
+        SET poll_count = poll_count + 1,
+            last_poll_at = NOW(),
+            interval_secs = $2
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(interval_secs)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(grant)
+}
+
+/// Mark a device authorization expired.
+pub async fn expire_device_authorization(
+    pool: &PgPool,
+    id: Uuid,
+) -> RegistryResult<DeviceAuthorization> {
+    let grant = sqlx::query_as::<_, DeviceAuthorization>(
+        r#"
+        UPDATE device_authorizations
+        SET status = 'expired'
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(grant)
+}
+
+/// Approve a device authorization for a user.
+pub async fn approve_device_authorization(
+    pool: &PgPool,
+    id: Uuid,
+    user_id: Uuid,
+) -> RegistryResult<DeviceAuthorization> {
+    let grant = sqlx::query_as::<_, DeviceAuthorization>(
+        r#"
+        UPDATE device_authorizations
+        SET status = 'approved',
+            user_id = $2,
+            approved_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(grant)
 }
 
 // ============================================================================

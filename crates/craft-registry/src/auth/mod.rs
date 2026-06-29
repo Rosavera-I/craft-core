@@ -19,7 +19,10 @@ use std::sync::Arc;
 
 use crate::{
     RegistryConfig,
-    db::{Database, get_access_token_by_hash, update_token_last_used},
+    db::{
+        Database, User, get_access_token_by_hash, list_user_org_slugs, list_user_team_slugs,
+        update_token_last_used,
+    },
     error::{RegistryError, RegistryResult},
 };
 
@@ -46,22 +49,111 @@ pub struct Claims {
     pub email: String,
     /// Is admin
     pub is_admin: bool,
+    /// Organization memberships
+    #[serde(default)]
+    pub orgs: Vec<String>,
+    /// Team memberships as org/team
+    #[serde(default)]
+    pub teams: Vec<String>,
+    /// Token class
+    #[serde(default = "default_token_type")]
+    pub token_type: String,
 }
 
 impl Claims {
     /// Create new claims for a user
     pub fn new(user_id: &str, name: &str, email: &str, is_admin: bool) -> Self {
+        Self::with_ttl(
+            user_id,
+            name,
+            email,
+            is_admin,
+            Vec::new(),
+            Vec::new(),
+            Duration::hours(24),
+            "access",
+        )
+    }
+
+    /// Create short-lived access token claims.
+    pub fn access_token(
+        user_id: &str,
+        name: &str,
+        email: &str,
+        is_admin: bool,
+        orgs: Vec<String>,
+        teams: Vec<String>,
+    ) -> Self {
+        Self::with_ttl(
+            user_id,
+            name,
+            email,
+            is_admin,
+            orgs,
+            teams,
+            Duration::hours(1),
+            "access",
+        )
+    }
+
+    /// Create long-lived refresh token claims.
+    pub fn refresh_token(
+        user_id: &str,
+        name: &str,
+        email: &str,
+        is_admin: bool,
+        orgs: Vec<String>,
+        teams: Vec<String>,
+    ) -> Self {
+        Self::with_ttl(
+            user_id,
+            name,
+            email,
+            is_admin,
+            orgs,
+            teams,
+            Duration::days(30),
+            "refresh",
+        )
+    }
+
+    fn with_ttl(
+        user_id: &str,
+        name: &str,
+        email: &str,
+        is_admin: bool,
+        orgs: Vec<String>,
+        teams: Vec<String>,
+        ttl: Duration,
+        token_type: &str,
+    ) -> Self {
         let now = Utc::now();
         Self {
             sub: user_id.to_string(),
             iat: now.timestamp(),
-            exp: (now + Duration::hours(24)).timestamp(),
+            exp: (now + ttl).timestamp(),
             iss: "craft-registry".to_string(),
             name: name.to_string(),
             email: email.to_string(),
             is_admin,
+            orgs,
+            teams,
+            token_type: token_type.to_string(),
         }
     }
+}
+
+fn default_token_type() -> String {
+    "access".to_string()
+}
+
+/// Login token pair returned by OAuth device flow.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenPair {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
 }
 
 /// Token scope for access tokens
@@ -168,6 +260,37 @@ impl AuthService {
     pub fn generate_jwt(&self, claims: &Claims) -> RegistryResult<String> {
         let header = Header::new(Algorithm::RS256);
         encode(&header, claims, &self.encoding_key).map_err(RegistryError::Jwt)
+    }
+
+    /// Generate access and refresh JWTs for an authenticated user.
+    pub async fn generate_device_token_pair(&self, user: &User) -> RegistryResult<TokenPair> {
+        let orgs = list_user_org_slugs(self.db.pool(), user.id).await?;
+        let teams = list_user_team_slugs(self.db.pool(), user.id).await?;
+        let display_name = user.display_name.as_deref().unwrap_or(&user.username);
+
+        let access_claims = Claims::access_token(
+            &user.id.to_string(),
+            display_name,
+            &user.email,
+            user.is_admin,
+            orgs.clone(),
+            teams.clone(),
+        );
+        let refresh_claims = Claims::refresh_token(
+            &user.id.to_string(),
+            display_name,
+            &user.email,
+            user.is_admin,
+            orgs,
+            teams,
+        );
+
+        Ok(TokenPair {
+            access_token: self.generate_jwt(&access_claims)?,
+            refresh_token: self.generate_jwt(&refresh_claims)?,
+            token_type: "Bearer".to_string(),
+            expires_in: 3600,
+        })
     }
 
     /// Verify a JWT token

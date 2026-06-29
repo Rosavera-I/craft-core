@@ -48,6 +48,14 @@ pub struct RegistryConfig {
     pub rate_limit_requests: u32,
     /// Rate limiting window in seconds (default: 60)
     pub rate_limit_window_secs: u64,
+    /// Public registry URL used to build OAuth callback and verification URLs.
+    pub public_base_url: String,
+    /// GitHub OAuth app client ID.
+    pub github_oauth_client_id: Option<String>,
+    /// GitHub OAuth app client secret.
+    pub github_oauth_client_secret: Option<String>,
+    /// Optional explicit GitHub OAuth redirect URI.
+    pub github_oauth_redirect_uri: Option<String>,
 }
 
 impl Default for RegistryConfig {
@@ -63,6 +71,10 @@ impl Default for RegistryConfig {
             max_package_size: 100 * 1024 * 1024, // 100MB
             rate_limit_requests: 100,
             rate_limit_window_secs: 60,
+            public_base_url: "http://localhost:8080".to_string(),
+            github_oauth_client_id: None,
+            github_oauth_client_secret: None,
+            github_oauth_redirect_uri: None,
         }
     }
 }

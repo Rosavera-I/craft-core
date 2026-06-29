@@ -230,6 +230,24 @@ pub struct AccessToken {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// OAuth device authorization grant.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct DeviceAuthorization {
+    pub id: Uuid,
+    pub device_code: String,
+    pub user_code: String,
+    pub client_id: String,
+    pub status: String,
+    pub user_id: Option<Uuid>,
+    pub interval_secs: i32,
+    pub poll_count: i32,
+    pub last_poll_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Audit log entry
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AuditLog {
