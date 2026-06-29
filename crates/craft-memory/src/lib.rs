@@ -1,3 +1,20 @@
+//! CRAFT Memory - Distributed memory synchronization
+//!
+//! Provides persistent memory storage with optional distributed sync.
+//!
+//! ## Crate Features
+//! - `crypto`: Enables distributed memory sync with encryption
+//!   (AES-256-GCM, X25519 key exchange, CRDT conflict resolution)
+
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+
+#[cfg(feature = "crypto")]
+pub mod crdt;
+#[cfg(feature = "crypto")]
+pub mod crypto;
+#[cfg(feature = "crypto")]
+pub mod sync;
+
 use std::env;
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -830,6 +847,28 @@ fn relevance_score(fact: &MemoryFact, query: &str) -> i64 {
 fn estimate_tokens(value: &str) -> usize {
     (value.len() / 4).max(1)
 }
+
+// Re-exports for crypto feature
+#[cfg(feature = "crypto")]
+pub use sync::{
+    DistributedConfig, DistributedMemory, SyncBatch, SyncError, SyncFact, SyncReport, SyncStats,
+    peer::{PeerConfig, PeerConnection, PeerId, PeerState},
+    protocol::{SyncMessage, SyncProtocol, SyncSession},
+};
+
+#[cfg(feature = "crypto")]
+pub use crypto::{
+    CryptoError, EncryptedPayload, NoiseHandshake, SymmetricCipher, X25519PublicKey, X25519Secret,
+};
+
+#[cfg(feature = "crypto")]
+pub use crdt::{
+    CrdtEnvelope, CrdtError, Mergeable, NodeId,
+    lww::{LwwRegister, MemoryFactCrdt},
+    merkle::{Hash256, MerkleNode, MerkleTree, SyncMessage as MerkleSyncMessage},
+    or_set::{OrSet, OrSetSnapshot, TagSet},
+    vector_clock::{SyncCheckpoint, VectorClock, VersionTag, VersionedFact},
+};
 
 #[derive(Debug, Default)]
 pub struct ScopedMemory {
