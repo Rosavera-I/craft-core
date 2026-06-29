@@ -217,8 +217,8 @@ flowchart LR
 | `harness install` | Install from GitHub | `craft harness install github:owner/repo` |
 | `harness list` | Show installed harnesses | `craft harness list` |
 | `harness test` | Run TDD validators | `craft harness test rust-maintainer` |
-| `compose-plan` | Preview composition | `craft compose-plan a b` |
-| `compose` | Write merged config | `craft compose a b -o out.toml` |
+| `compose-plan` | Preview composition | `craft compose-plan a b --strategy merge` |
+| `compose` | Write merged config | `craft compose a b --strategy override -o out.toml` |
 | `run` | Execute with LLM | `craft run out.toml --model llama3.1:8b` |
 | `validate` | Validate harness project | `craft validate ./my-harness` |
 | `memory` | Record/recall facts | `craft memory log project lang rust` |

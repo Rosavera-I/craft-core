@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use craft_core::{
-    CraftError, CraftHome, GithubSource, HarnessManager, ValidationResult, compose_harnesses,
-    plan_composition, test_installed_harness, validate_harness_project,
+    ConflictStrategy, CraftError, CraftHome, GithubSource, HarnessManager, ValidationResult,
+    compose_harnesses, plan_composition, test_installed_harness, validate_harness_project,
 };
 use craft_memory::{Memory, MemoryError, MemoryScope};
 
@@ -151,8 +151,8 @@ Usage:
   craft harness info <name>
   craft harness test <name>
   craft harness uninstall <name>
-  craft compose <harness> [harness...] [-o craft.compose.toml] [--plan]
-  craft compose-plan <harness> [harness...]
+  craft compose <harness> [harness...] [-o craft.compose.toml] [--plan] [--strategy <strategy>]
+  craft compose-plan <harness> [harness...] [--strategy <strategy>]
   craft run [craft.compose.toml] --model <model> [--runtime ollama] [--prompt <text>]
   craft lsp             Start the craft.toml language server on stdio
   craft validate [path]   Validate a harness manifest and TDD checks
@@ -331,13 +331,14 @@ fn print_validation_result(result: &ValidationResult) {
 fn compose_command(args: &[String]) -> Result<(), CliError> {
     if args.is_empty() {
         return Err(CliError::usage(
-            "usage: craft compose <harness> [harness...] [-o craft.compose.toml] [--plan]",
+            "usage: craft compose <harness> [harness...] [-o craft.compose.toml] [--plan] [--strategy <strategy>]",
         ));
     }
 
     let mut names = Vec::new();
     let mut output = PathBuf::from("craft.compose.toml");
     let mut show_plan = false;
+    let mut strategy = ConflictStrategy::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -352,6 +353,14 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
                 output = PathBuf::from(value);
                 index += 2;
             }
+            "--strategy" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| CliError::usage("craft compose --strategy requires a value"))?;
+                strategy = ConflictStrategy::from_string(value)
+                    .ok_or_else(|| CliError::usage(format!("unknown strategy `{value}`; use ordered-merge, merge, override, or fail")))?;
+                index += 2;
+            }
             value => {
                 names.push(value.to_string());
                 index += 1;
@@ -362,12 +371,12 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
     let manager = HarnessManager::new(CraftHome::from_env()?);
     let registry = manager.registry()?;
     if show_plan {
-        let plan = plan_composition(&registry, &names)?;
+        let plan = plan_composition(&registry, &names, strategy)?;
         print_composition_plan(&plan);
         return Ok(());
     }
 
-    let result = compose_harnesses(&registry, &names, &output)?;
+    let result = compose_harnesses(&registry, &names, &output, strategy)?;
     for warning in result.warnings {
         eprintln!("warning: {warning}");
     }
@@ -378,11 +387,12 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
 fn compose_plan_command(args: &[String]) -> Result<(), CliError> {
     if args.is_empty() {
         return Err(CliError::usage(
-            "usage: craft compose-plan <harness> [harness...]",
+            "usage: craft compose-plan <harness> [harness...] [--strategy <strategy>]",
         ));
     }
 
     let mut names = Vec::new();
+    let mut strategy = ConflictStrategy::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -394,6 +404,14 @@ fn compose_plan_command(args: &[String]) -> Result<(), CliError> {
                     "craft compose-plan never writes output; remove -o/--output",
                 ));
             }
+            "--strategy" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| CliError::usage("craft compose-plan --strategy requires a value"))?;
+                strategy = ConflictStrategy::from_string(value)
+                    .ok_or_else(|| CliError::usage(format!("unknown strategy `{value}`; use ordered-merge, merge, override, or fail")))?;
+                index += 2;
+            }
             value => {
                 names.push(value.to_string());
                 index += 1;
@@ -403,14 +421,14 @@ fn compose_plan_command(args: &[String]) -> Result<(), CliError> {
 
     let manager = HarnessManager::new(CraftHome::from_env()?);
     let registry = manager.registry()?;
-    let plan = plan_composition(&registry, &names)?;
+    let plan = plan_composition(&registry, &names, strategy)?;
     print_composition_plan(&plan);
     Ok(())
 }
 
 fn print_composition_plan(plan: &craft_core::CompositionPlan) {
     println!("composition plan");
-    println!("strategy: {}", plan.strategy);
+    println!("strategy: {}", plan.strategy.as_str());
     println!("harnesses:");
     for harness in &plan.harnesses {
         println!(
@@ -425,9 +443,23 @@ fn print_composition_plan(plan: &craft_core::CompositionPlan) {
     }
     println!("merge:");
     println!("- prompts.system: concatenated in listed order");
-    println!("- memory.schemas: namespaced by harness name");
-    println!("- tools.mcp: namespaced by harness name");
-    println!("- validators.tdd: namespaced by harness name");
+    match plan.strategy {
+        ConflictStrategy::OrderedMerge | ConflictStrategy::Merge => {
+            println!("- memory.schemas: namespaced by harness name");
+            println!("- tools.mcp: namespaced by harness name");
+            println!("- validators.tdd: namespaced by harness name");
+        }
+        ConflictStrategy::Override => {
+            println!("- memory.schemas: last harness wins");
+            println!("- tools.mcp: last harness wins");
+            println!("- validators.tdd: last harness wins");
+        }
+        ConflictStrategy::Fail => {
+            println!("- memory.schemas: conflict detection enabled");
+            println!("- tools.mcp: conflict detection enabled");
+            println!("- validators.tdd: conflict detection enabled");
+        }
+    }
     if !plan.warnings.is_empty() {
         println!("warnings:");
         for warning in &plan.warnings {

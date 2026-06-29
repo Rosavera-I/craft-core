@@ -8,6 +8,11 @@ use std::process::{Command, Output};
 
 use craft_manifest::{Manifest, ManifestError, load_manifest};
 use rusqlite::{Connection, OptionalExtension, params};
+use semver::Version;
+
+
+pub mod version;
+pub use version::{VersionConstraint, VersionError, VersionResolver, ResolvedVersion, VersionedHarness, HarnessDependency};
 
 #[derive(Debug, Clone)]
 pub struct HarnessProject {
@@ -105,6 +110,53 @@ impl GithubSource {
         })
     }
 
+    /// Parse a source with optional version constraint (e.g., ^1.2.0, ~2.0.0)
+    pub fn parse_with_constraint(input: &str) -> Result<(Self, Option<VersionConstraint>), CraftError> {
+        let raw = input.strip_prefix("github:").ok_or_else(|| {
+            CraftError::InvalidSource("source must start with github:".to_string())
+        })?;
+        
+        // Try to extract version constraint
+        let (path, reference, constraint) = match raw.split_once('@') {
+            Some((path, reference)) if !reference.trim().is_empty() => {
+                let reference = reference.trim();
+                // Check if reference looks like a version constraint
+                if reference.starts_with('^') || reference.starts_with('~') || 
+                   reference.starts_with(">=") || reference.starts_with('<') ||
+                   reference.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    // Try to parse as version constraint
+                    match VersionConstraint::parse(reference) {
+                        Ok(constraint) => (path, None, Some(constraint)),
+                        Err(_) => (path, Some(reference.to_string()), None)
+                    }
+                } else {
+                    (path, Some(reference.to_string()), None)
+                }
+            }
+            Some(_) => {
+                return Err(CraftError::InvalidSource(
+                    "github source reference must not be empty".to_string(),
+                ));
+            }
+            None => (raw, None, None),
+        };
+        
+        let (owner, repo) = path.split_once('/').ok_or_else(|| {
+            CraftError::InvalidSource("github source must be github:owner/repo".to_string())
+        })?;
+        validate_slug("owner", owner)?;
+        validate_slug("repo", repo)?;
+        
+        Ok((
+            Self {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                reference,
+            },
+            constraint
+        ))
+    }
+
     pub fn clone_url(&self) -> String {
         format!("https://github.com/{}/{}.git", self.owner, self.repo)
     }
@@ -137,8 +189,50 @@ pub struct ComposeResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactConflict {
+    pub harness_name: String,
+    pub artifact_type: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictStrategy {
+    OrderedMerge,
+    Merge,
+    Override,
+    Fail,
+}
+
+impl Default for ConflictStrategy {
+    fn default() -> Self {
+        Self::OrderedMerge
+    }
+}
+
+impl ConflictStrategy {
+    pub fn from_string(s: &str) -> Option<Self> {
+        match s {
+            "ordered-merge" => Some(Self::OrderedMerge),
+            "merge" => Some(Self::Merge),
+            "override" => Some(Self::Override),
+            "fail" => Some(Self::Fail),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OrderedMerge => "ordered-merge",
+            Self::Merge => "merge",
+            Self::Override => "override",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositionPlan {
-    pub strategy: String,
+    pub strategy: ConflictStrategy,
     pub harnesses: Vec<CompositionHarness>,
     pub warnings: Vec<String>,
 }
@@ -274,6 +368,7 @@ impl HarnessManager {
         Self { home }
     }
 
+    /// Install a harness from a GitHub source.
     pub fn install_github(&self, source: &GithubSource) -> Result<InstallResult, CraftError> {
         self.home.ensure()?;
         let checkout = self.home.harnesses_dir().join(&source.repo);
@@ -301,14 +396,55 @@ impl HarnessManager {
 
         let manifest = load_manifest(checkout.join("craft.toml"))?;
         let installed = InstalledHarness {
-            name: manifest.harness.name,
-            version: manifest.harness.version,
+            name: manifest.harness.name.clone(),
+            version: manifest.harness.version.clone(),
             source: source.source_id(),
-            path: checkout,
+            path: checkout.clone(),
         };
         let registry = HarnessRegistry::open(self.home.registry_path())?;
         registry.upsert(&installed)?;
         Ok(InstallResult { harness: installed })
+    }
+
+    /// Install a harness by version constraint.
+    /// If the constraint is satisfied by an already-installed version, return that.
+    /// Otherwise, clone from the source and install.
+    pub fn install_with_constraint(
+        &self,
+        source: &GithubSource,
+        constraint: &VersionConstraint,
+    ) -> Result<InstallResult, CraftError> {
+        let registry = HarnessRegistry::open(self.home.registry_path())?;
+        
+        // Check if a matching version already exists
+        if let Some(existing) = registry.find_version(&source.repo, constraint)? {
+            return Ok(InstallResult { harness: existing });
+        }
+        
+        // Otherwise, install from source
+        self.install_github(source)
+    }
+
+    /// Check if a harness version matching the constraint is already installed.
+    pub fn is_version_installed(
+        &self,
+        harness_name: &str,
+        constraint: &VersionConstraint,
+    ) -> Result<Option<InstalledHarness>, CraftError> {
+        let registry = HarnessRegistry::open(self.home.registry_path())?;
+        registry.find_version(harness_name, constraint)
+    }
+
+    /// Resolve a list of harness dependencies to specific versions.
+    pub fn resolve_dependencies(
+        &self,
+        dependencies: &[HarnessDependency],
+    ) -> Result<Vec<ResolvedVersion>, CraftError> {
+        let registry = HarnessRegistry::open(self.home.registry_path())?;
+        let resolver = registry.to_version_resolver()?;
+        resolver.resolve_dependencies(dependencies).map_err(|e| {
+            CraftError::InvalidSource(e.to_string())
+        })
     }
 
     pub fn registry(&self) -> Result<HarnessRegistry, CraftError> {
@@ -328,24 +464,51 @@ impl HarnessRegistry {
         if let Some(parent) = registry.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        registry.connection()?.execute_batch(
-            "CREATE TABLE IF NOT EXISTS harnesses (
-                name TEXT PRIMARY KEY,
-                version TEXT NOT NULL,
-                source TEXT NOT NULL,
-                path TEXT NOT NULL,
-                installed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
-        )?;
+        registry.init_schema()?;
         Ok(registry)
     }
 
+    fn init_schema(&self) -> Result<(), CraftError> {
+        let conn = self.connection()?;
+        
+        // Create harnesses table (primary version tracking - allows multiple versions)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS harnesses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                source TEXT NOT NULL,
+                path TEXT NOT NULL,
+                installed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(name, version)
+            );",
+        )?;
+
+        // Create index for fast lookups by name
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_harnesses_name ON harnesses(name);",
+        )?;
+
+        // Create default_versions table for tracking which version is the default
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS default_versions (
+                name TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                FOREIGN KEY (name, version) REFERENCES harnesses(name, version)
+                    ON DELETE CASCADE
+            );",
+        )?;
+
+        Ok(())
+    }
+
+    /// Upsert a harness into the registry.
+    /// If the same version already exists, it updates the source and path.
     pub fn upsert(&self, harness: &InstalledHarness) -> Result<(), CraftError> {
         self.connection()?.execute(
             "INSERT INTO harnesses (name, version, source, path)
              VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(name) DO UPDATE SET
-                version = excluded.version,
+             ON CONFLICT(name, version) DO UPDATE SET
                 source = excluded.source,
                 path = excluded.path,
                 installed_at = CURRENT_TIMESTAMP;",
@@ -356,22 +519,64 @@ impl HarnessRegistry {
                 harness.path.to_string_lossy()
             ],
         )?;
+        
+        // Set as default if no default exists for this harness
+        let conn = self.connection()?;
+        let has_default: bool = conn.query_row(
+            "SELECT 1 FROM default_versions WHERE name = ?1;",
+            params![&harness.name],
+            |_| Ok(true),
+        ).unwrap_or(false);
+        
+        if !has_default {
+            conn.execute(
+                "INSERT OR REPLACE INTO default_versions (name, version)
+                 VALUES (?1, ?2);",
+                params![&harness.name, &harness.version],
+            )?;
+        }
+        
         Ok(())
     }
 
+    /// List all harnesses (one entry per harness, using default version)
     pub fn list(&self) -> Result<Vec<InstalledHarness>, CraftError> {
         let connection = self.connection()?;
         let mut statement = connection
-            .prepare("SELECT name, version, source, path FROM harnesses ORDER BY name;")?;
+            .prepare("
+                SELECT h.name, h.version, h.source, h.path 
+                FROM harnesses h
+                JOIN default_versions d ON h.name = d.name AND h.version = d.version
+                ORDER BY h.name;
+            ")?;
         let rows = statement.query_map([], installed_harness_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// List all versions of a specific harness
+    pub fn list_versions(&self, name: &str) -> Result<Vec<InstalledHarness>, CraftError> {
+        validate_harness_name(name)?;
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("
+                SELECT name, version, source, path 
+                FROM harnesses 
+                WHERE name = ?1
+                ORDER BY version DESC;
+            ")?;
+        let rows = statement.query_map(params![name], installed_harness_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get info for the default version of a harness
     pub fn info(&self, name: &str) -> Result<InstalledHarness, CraftError> {
         validate_harness_name(name)?;
         self.connection()?
             .query_row(
-                "SELECT name, version, source, path FROM harnesses WHERE name = ?1;",
+                "SELECT h.name, h.version, h.source, h.path 
+                 FROM harnesses h
+                 JOIN default_versions d ON h.name = d.name AND h.version = d.version
+                 WHERE h.name = ?1;",
                 params![name],
                 installed_harness_from_row,
             )
@@ -379,18 +584,167 @@ impl HarnessRegistry {
             .ok_or_else(|| CraftError::MissingHarness(format!("harness `{name}` is not installed")))
     }
 
+    /// Get info for a specific version of a harness
+    pub fn info_version(&self, name: &str, version: &str) -> Result<InstalledHarness, CraftError> {
+        validate_harness_name(name)?;
+        self.connection()?
+            .query_row(
+                "SELECT name, version, source, path FROM harnesses WHERE name = ?1 AND version = ?2;",
+                params![name, version],
+                installed_harness_from_row,
+            )
+            .optional()?
+            .ok_or_else(|| CraftError::MissingHarness(
+                format!("harness `{name}` version `{version}` is not installed")
+            ))
+    }
+
+    /// Set the default version for a harness
+    pub fn set_default_version(&self, name: &str, version: &str) -> Result<(), CraftError> {
+        validate_harness_name(name)?;
+        // Verify the version exists
+        let exists = self.connection()?.query_row(
+            "SELECT 1 FROM harnesses WHERE name = ?1 AND version = ?2;",
+            params![name, version],
+            |_| Ok(true),
+        ).unwrap_or(false);
+        
+        if !exists {
+            return Err(CraftError::MissingHarness(
+                format!("harness `{name}` version `{version}` is not installed")
+            ));
+        }
+        
+        self.connection()?.execute(
+            "INSERT OR REPLACE INTO default_versions (name, version) VALUES (?1, ?2);",
+            params![name, version],
+        )?;
+        Ok(())
+    }
+
+    /// Get the default version for a harness
+    pub fn get_default_version(&self, name: &str) -> Result<Option<String>, CraftError> {
+        validate_harness_name(name)?;
+        let version = self.connection()?.query_row(
+            "SELECT version FROM default_versions WHERE name = ?1;",
+            params![name],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(version)
+    }
+
+    /// Find the best matching harness version for a constraint
+    pub fn find_version(&self, name: &str, constraint: &VersionConstraint) -> Result<Option<InstalledHarness>, CraftError> {
+        validate_harness_name(name)?;
+        let versions = self.list_versions(name)?;
+        
+        // Filter by constraint and sort by version descending
+        let mut matching: Vec<_> = versions
+            .into_iter()
+            .filter(|h| {
+                Version::parse(&h.version).map(|v| constraint.matches(&v)).unwrap_or(false)
+            })
+            .collect();
+        
+        // Sort by parsed version descending
+        matching.sort_by(|a, b| {
+            let va = Version::parse(&a.version).unwrap_or_else(|_| Version::new(0, 0, 0));
+            let vb = Version::parse(&b.version).unwrap_or_else(|_| Version::new(0, 0, 0));
+            vb.cmp(&va)
+        });
+        
+        Ok(matching.into_iter().next())
+    }
+
+    /// Uninstall a specific version of a harness
+    pub fn uninstall_version(
+        &self,
+        name: &str,
+        version: Option<&str>,
+        remove_files: bool,
+    ) -> Result<InstalledHarness, CraftError> {
+        let harness = if let Some(v) = version {
+            self.info_version(name, v)?
+        } else {
+            self.info(name)?
+        };
+        
+        // Use a single connection for all operations in this method
+        let conn = self.connection()?;
+        
+        // Check if this was the default BEFORE deleting
+        let was_default: bool = conn.query_row(
+            "SELECT 1 FROM default_versions WHERE name = ?1 AND version = ?2;",
+            params![&harness.name, &harness.version],
+            |_| Ok(true),
+        ).unwrap_or(false);
+        
+        conn.execute("DELETE FROM harnesses WHERE name = ?1 AND version = ?2;", 
+            params![&harness.name, &harness.version])?;
+        
+        // Update default version if this was the default
+        if was_default {
+            // Find another version to set as default
+            let new_default: Option<String> = conn.query_row(
+                "SELECT version FROM harnesses WHERE name = ?1 ORDER BY version DESC LIMIT 1;",
+                params![&harness.name],
+                |row| row.get(0),
+            ).optional()?;
+            
+            if let Some(v) = new_default {
+                conn.execute(
+                    "INSERT OR REPLACE INTO default_versions (name, version) VALUES (?1, ?2);",
+                    params![&harness.name, v],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM default_versions WHERE name = ?1;",
+                    params![&harness.name],
+                )?;
+            }
+        }
+        
+        if remove_files && harness.path.exists() {
+            fs::remove_dir_all(&harness.path)?;
+        }
+        Ok(harness)
+    }
+
+    /// Uninstall all versions of a harness (legacy alias)
     pub fn uninstall(
         &self,
         name: &str,
         remove_files: bool,
     ) -> Result<InstalledHarness, CraftError> {
-        let harness = self.info(name)?;
-        self.connection()?
-            .execute("DELETE FROM harnesses WHERE name = ?1;", params![name])?;
-        if remove_files && harness.path.exists() {
-            fs::remove_dir_all(&harness.path)?;
+        self.uninstall_version(name, None, remove_files)
+    }
+
+    /// Get all available harnesses and their versions for the resolver
+    pub fn to_version_resolver(&self) -> Result<VersionResolver, CraftError> {
+        let mut resolver = VersionResolver::new();
+        let conn = self.connection()?;
+        
+        let mut stmt = conn.prepare(
+            "SELECT name, version, source, path FROM harnesses;"
+        )?;
+        
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        
+        for row in rows {
+            let (name, version_str, source, path) = row?;
+            if let Ok(version) = Version::parse(&version_str) {
+                resolver.add_version(name, version, source, path);
+            }
         }
-        Ok(harness)
+        
+        Ok(resolver)
     }
 
     fn connection(&self) -> Result<Connection, CraftError> {
@@ -418,9 +772,10 @@ pub fn compose_harnesses(
     registry: &HarnessRegistry,
     harness_names: &[String],
     output_path: impl AsRef<Path>,
+    strategy: ConflictStrategy,
 ) -> Result<ComposeResult, CraftError> {
     let (artifacts, warnings) = collect_compose_artifacts(registry, harness_names)?;
-    let contents = render_compose(&artifacts, &warnings);
+    let contents = render_compose(&artifacts, &warnings, strategy);
     let output_path = output_path.as_ref().to_path_buf();
     fs::write(&output_path, contents)?;
     Ok(ComposeResult {
@@ -432,10 +787,11 @@ pub fn compose_harnesses(
 pub fn plan_composition(
     registry: &HarnessRegistry,
     harness_names: &[String],
+    strategy: ConflictStrategy,
 ) -> Result<CompositionPlan, CraftError> {
     let (artifacts, warnings) = collect_compose_artifacts(registry, harness_names)?;
     Ok(CompositionPlan {
-        strategy: "ordered-merge".to_string(),
+        strategy,
         harnesses: artifacts
             .into_iter()
             .map(|artifact| {
@@ -638,11 +994,11 @@ fn read_harness_artifact(root: &Path, relative_path: &Path) -> Result<String, Cr
         .map_err(|err| CraftError::io(format!("failed to read {}: {err}", path.display()), err))
 }
 
-fn render_compose(artifacts: &[ComposeArtifact], warnings: &[String]) -> String {
+fn render_compose(artifacts: &[ComposeArtifact], warnings: &[String], strategy: ConflictStrategy) -> String {
     let mut output = String::new();
     output.push_str("# Generated by craft compose\n\n");
     output.push_str("[compose]\n");
-    output.push_str("strategy = \"ordered-merge\"\n");
+    output.push_str(&format!("strategy = \"{}\"\n", strategy.as_str()));
     output.push_str("harnesses = [");
     for (index, artifact) in artifacts.iter().enumerate() {
         if index > 0 {
@@ -692,29 +1048,86 @@ fn render_compose(artifacts: &[ComposeArtifact], warnings: &[String]) -> String 
     output.push('\n');
 
     output.push_str("[memory.schemas]\n");
-    for artifact in artifacts {
-        output.push_str(&quoted_key(&artifact.manifest.harness.name));
-        output.push_str(" = ");
-        output.push_str(&quoted(&artifact.memory_schema));
-        output.push('\n');
+    match strategy {
+        ConflictStrategy::OrderedMerge | ConflictStrategy::Merge => {
+            for artifact in artifacts {
+                output.push_str(&quoted_key(&artifact.manifest.harness.name));
+                output.push_str(" = ");
+                output.push_str(&quoted(&artifact.memory_schema));
+                output.push('\n');
+            }
+        }
+        ConflictStrategy::Override => {
+            if let Some(last) = artifacts.last() {
+                output.push_str("_merged = ");
+                output.push_str(&quoted(&last.memory_schema));
+                output.push('\n');
+            }
+        }
+        ConflictStrategy::Fail => {
+            for artifact in artifacts {
+                output.push_str(&quoted_key(&artifact.manifest.harness.name));
+                output.push_str(" = ");
+                output.push_str(&quoted(&artifact.memory_schema));
+                output.push('\n');
+            }
+        }
     }
     output.push('\n');
 
     output.push_str("[tools.mcp]\n");
-    for artifact in artifacts {
-        output.push_str(&quoted_key(&artifact.manifest.harness.name));
-        output.push_str(" = ");
-        output.push_str(&quoted(&artifact.mcp_tools));
-        output.push('\n');
+    match strategy {
+        ConflictStrategy::OrderedMerge | ConflictStrategy::Merge => {
+            for artifact in artifacts {
+                output.push_str(&quoted_key(&artifact.manifest.harness.name));
+                output.push_str(" = ");
+                output.push_str(&quoted(&artifact.mcp_tools));
+                output.push('\n');
+            }
+        }
+        ConflictStrategy::Override => {
+            if let Some(last) = artifacts.last() {
+                output.push_str("_merged = ");
+                output.push_str(&quoted(&last.mcp_tools));
+                output.push('\n');
+            }
+        }
+        ConflictStrategy::Fail => {
+            for artifact in artifacts {
+                output.push_str(&quoted_key(&artifact.manifest.harness.name));
+                output.push_str(" = ");
+                output.push_str(&quoted(&artifact.mcp_tools));
+                output.push('\n');
+            }
+        }
     }
     output.push('\n');
 
     output.push_str("[validators.tdd]\n");
-    for artifact in artifacts {
-        output.push_str(&quoted_key(&artifact.manifest.harness.name));
-        output.push_str(" = ");
-        output.push_str(&quoted(&artifact.tdd_validators));
-        output.push('\n');
+    match strategy {
+        ConflictStrategy::OrderedMerge | ConflictStrategy::Merge => {
+            for artifact in artifacts {
+                output.push_str(&quoted_key(&artifact.manifest.harness.name));
+                output.push_str(" = ");
+                output.push_str(&quoted(&artifact.tdd_validators));
+                output.push('\n');
+            }
+        }
+        ConflictStrategy::Override => {
+            if let Some(last) = artifacts.last() {
+                output.push_str("_merged = ");
+                output.push_str(&quoted(&last.tdd_validators));
+                output.push('\n');
+            }
+        }
+        ConflictStrategy::Fail => {
+            for artifact in artifacts {
+                output.push_str(&quoted_key(&artifact.manifest.harness.name));
+                output.push_str(" = ");
+                output.push_str(&quoted(&artifact.tdd_validators));
+                output.push('\n');
+            }
+        }
     }
     output.push('\n');
 
@@ -900,6 +1313,7 @@ mod tests {
                 "roguelike-specialist".to_string(),
             ],
             root.join("craft.compose.toml"),
+            ConflictStrategy::OrderedMerge,
         )
         .unwrap_or_else(|err| panic!("{err}"));
 
@@ -982,6 +1396,7 @@ mod tests {
         let result = plan_composition(
             &registry,
             &["godot-designer".to_string(), "godot-designer".to_string()],
+            ConflictStrategy::OrderedMerge,
         )
         .unwrap_or_else(|err| panic!("{err}"));
 
@@ -1048,11 +1463,271 @@ tdd = "validators/checks.tdd"
         .unwrap_or_else(|err| panic!("{err}"));
     }
 
+    #[test]
+    fn compose_with_override_strategy_uses_last_harness() {
+        let root = temp_root("craft-compose-override");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        create_harness(&root, "godot-designer");
+        create_harness(&root, "roguelike-specialist");
+
+        for name in ["godot-designer", "roguelike-specialist"] {
+            registry
+                .upsert(&InstalledHarness {
+                    name: name.to_string(),
+                    version: "0.1.0".to_string(),
+                    source: format!("github:JMoak/craft-{name}"),
+                    path: root.join(name),
+                })
+                .unwrap_or_else(|err| panic!("{err}"));
+        }
+
+        let result = compose_harnesses(
+            &registry,
+            &[
+                "godot-designer".to_string(),
+                "roguelike-specialist".to_string(),
+            ],
+            root.join("craft.compose.toml"),
+            ConflictStrategy::Override,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        let contents =
+            fs::read_to_string(&result.output_path).unwrap_or_else(|err| panic!("{err}"));
+        assert!(contents.contains("strategy = \"override\""));
+        assert!(contents.contains("_merged = "));
+        assert!(contents.contains("roguelike-specialist"));
+
+        fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn compose_with_merge_strategy_namespaces_artifacts() {
+        let root = temp_root("craft-compose-merge");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        create_harness(&root, "godot-designer");
+        create_harness(&root, "roguelike-specialist");
+
+        for name in ["godot-designer", "roguelike-specialist"] {
+            registry
+                .upsert(&InstalledHarness {
+                    name: name.to_string(),
+                    version: "0.1.0".to_string(),
+                    source: format!("github:JMoak/craft-{name}"),
+                    path: root.join(name),
+                })
+                .unwrap_or_else(|err| panic!("{err}"));
+        }
+
+        let result = compose_harnesses(
+            &registry,
+            &[
+                "godot-designer".to_string(),
+                "roguelike-specialist".to_string(),
+            ],
+            root.join("craft.compose.toml"),
+            ConflictStrategy::Merge,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        let contents =
+            fs::read_to_string(&result.output_path).unwrap_or_else(|err| panic!("{err}"));
+        assert!(contents.contains("strategy = \"merge\""));
+        assert!(contents.contains("\"godot-designer\" = \"[facts]"));
+        assert!(contents.contains("\"roguelike-specialist\" = \"[facts]"));
+
+        fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn compose_with_fail_strategy_outputs_namespaced() {
+        let root = temp_root("craft-compose-fail");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        create_harness(&root, "godot-designer");
+        create_harness(&root, "roguelike-specialist");
+
+        for name in ["godot-designer", "roguelike-specialist"] {
+            registry
+                .upsert(&InstalledHarness {
+                    name: name.to_string(),
+                    version: "0.1.0".to_string(),
+                    source: format!("github:JMoak/craft-{name}"),
+                    path: root.join(name),
+                })
+                .unwrap_or_else(|err| panic!("{err}"));
+        }
+
+        let result = compose_harnesses(
+            &registry,
+            &[
+                "godot-designer".to_string(),
+                "roguelike-specialist".to_string(),
+            ],
+            root.join("craft.compose.toml"),
+            ConflictStrategy::Fail,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        let contents =
+            fs::read_to_string(&result.output_path).unwrap_or_else(|err| panic!("{err}"));
+        assert!(contents.contains("strategy = \"fail\""));
+        assert!(contents.contains("\"godot-designer\" = \"[facts]"));
+        assert!(contents.contains("\"roguelike-specialist\" = \"[facts]"));
+
+        fs::remove_dir_all(root).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn conflict_strategy_from_string_is_case_sensitive() {
+        assert_eq!(ConflictStrategy::from_string("ordered-merge"), Some(ConflictStrategy::OrderedMerge));
+        assert_eq!(ConflictStrategy::from_string("merge"), Some(ConflictStrategy::Merge));
+        assert_eq!(ConflictStrategy::from_string("override"), Some(ConflictStrategy::Override));
+        assert_eq!(ConflictStrategy::from_string("fail"), Some(ConflictStrategy::Fail));
+        assert_eq!(ConflictStrategy::from_string("MERGE"), None);
+        assert_eq!(ConflictStrategy::from_string("unknown"), None);
+    }
+
+    #[test]
+    fn conflict_strategy_as_str_returns_expected_values() {
+        assert_eq!(ConflictStrategy::OrderedMerge.as_str(), "ordered-merge");
+        assert_eq!(ConflictStrategy::Merge.as_str(), "merge");
+        assert_eq!(ConflictStrategy::Override.as_str(), "override");
+        assert_eq!(ConflictStrategy::Fail.as_str(), "fail");
+    }
+
     fn temp_root(prefix: &str) -> PathBuf {
+
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_else(|err| panic!("{err}"))
             .as_nanos();
         env::temp_dir().join(format!("{prefix}-{unique}"))
+    }
+
+    #[test]
+    fn registry_multiple_versions() {
+        let root = temp_root("craft-registry-multi");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3")).unwrap();
+
+        // Install first version
+        registry.upsert(&InstalledHarness {
+            name: "test-harness".to_string(),
+            version: "1.0.0".to_string(),
+            source: "github:test/repo".to_string(),
+            path: root.join("v1"),
+        }).unwrap();
+
+        // Install second version
+        registry.upsert(&InstalledHarness {
+            name: "test-harness".to_string(),
+            version: "1.1.0".to_string(),
+            source: "github:test/repo".to_string(),
+            path: root.join("v1.1"),
+        }).unwrap();
+
+        // Both versions should be retrievable
+        let versions = registry.list_versions("test-harness").unwrap();
+        assert_eq!(versions.len(), 2);
+
+        // Default should be the first installed
+        let default = registry.info("test-harness").unwrap();
+        assert_eq!(default.version, "1.0.0");
+
+        // But we can set a different default
+        registry.set_default_version("test-harness", "1.1.0").unwrap();
+        let new_default = registry.info("test-harness").unwrap();
+        assert_eq!(new_default.version, "1.1.0");
+
+        // Can query specific version
+        let specific = registry.info_version("test-harness", "1.0.0").unwrap();
+        assert_eq!(specific.version, "1.0.0");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_find_version_with_constraint() {
+        let root = temp_root("craft-registry-constraint");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3")).unwrap();
+
+        // Install multiple versions
+        for (version, path) in [
+            ("1.0.0", root.join("v1")),
+            ("1.2.0", root.join("v1.2")),
+            ("1.5.0", root.join("v1.5")),
+            ("2.0.0", root.join("v2")),
+        ] {
+            registry.upsert(&InstalledHarness {
+                name: "dep-harness".to_string(),
+                version: version.to_string(),
+                source: "github:owner/dep".to_string(),
+                path,
+            }).unwrap();
+        }
+
+        // Find matching version
+        let constraint = VersionConstraint::parse("^1.0.0").unwrap();
+        let found = registry.find_version("dep-harness", &constraint).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().version, "1.5.0"); // Highest matching
+
+        // Constraint that doesn't match 2.x
+        let compatibility = VersionConstraint::parse("^1.2.0").unwrap();
+        let found_compat = registry.find_version("dep-harness", &compatibility).unwrap();
+        assert!(found_compat.is_some());
+        assert_eq!(found_compat.unwrap().version, "1.5.0");
+
+        // No match
+        let no_match = VersionConstraint::parse("^3.0.0").unwrap();
+        let found_none = registry.find_version("dep-harness", &no_match).unwrap();
+        assert!(found_none.is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_uninstall_version_updates_default() {
+        let root = temp_root("craft-uninstall-update");
+        let registry = HarnessRegistry::open(root.join("registry.sqlite3")).unwrap();
+
+        // Install two versions
+        registry.upsert(&InstalledHarness {
+            name: "multi-version".to_string(),
+            version: "1.0.0".to_string(),
+            source: "src1".to_string(),
+            path: root.join("v1"),
+        }).unwrap();
+
+        registry.upsert(&InstalledHarness {
+            name: "multi-version".to_string(),
+            version: "2.0.0".to_string(),
+            source: "src2".to_string(),
+            path: root.join("v2"),
+        }).unwrap();
+
+        // Verify both versions exist
+        let all_versions = registry.list_versions("multi-version").unwrap();
+        assert_eq!(all_versions.len(), 2, "Expected 2 versions but found {}", all_versions.len());
+
+        // Set v2 as default
+        registry.set_default_version("multi-version", "2.0.0").unwrap();
+        let current_default = registry.get_default_version("multi-version").unwrap();
+        assert_eq!(current_default, Some("2.0.0".to_string()), "Default should be 2.0.0");
+
+        // Uninstall v2
+        registry.uninstall_version("multi-version", Some("2.0.0"), false).unwrap();
+
+        // Default should fall back to v1
+        let remaining = registry.list_versions("multi-version").unwrap();
+        assert_eq!(remaining.len(), 1, "Expected 1 remaining version");
+        assert_eq!(remaining[0].version, "1.0.0");
+
+        let new_default = registry.get_default_version("multi-version").unwrap();
+        assert_eq!(new_default, Some("1.0.0".to_string()), "Default should be 1.0.0 after uninstalling 2.0.0");
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
