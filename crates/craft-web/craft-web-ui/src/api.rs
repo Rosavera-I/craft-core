@@ -1,6 +1,7 @@
 //! API client for communicating with CRAFT Web Dashboard backend
 
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 
 /// Default API base URL for local development
 const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
@@ -144,6 +145,10 @@ impl ApiClient {
         
         let request = web_sys::Request::new_with_str_and_init(&url, &opts)
             .map_err(|_| "Failed to create request")?;
+        request
+            .headers()
+            .set("Content-Type", "application/json")
+            .map_err(|_| "Failed to set content type")?;
         
         let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
             .await

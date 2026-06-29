@@ -87,6 +87,12 @@ impl Server {
             .route("/api/v1/status", get(status))
             .route("/api/v1/auth/login", post(login))
             .route("/api/v1/auth/register", post(register))
+            .route("/auth/device", post(initiate_device_auth))
+            .route("/auth/device/poll", post(poll_device_auth))
+            .route("/auth/github/callback", get(github_callback))
+            .route("/api/v1/auth/device", post(initiate_device_auth))
+            .route("/api/v1/auth/device/poll", post(poll_device_auth))
+            .route("/api/v1/auth/github/callback", get(github_callback))
             .route("/api/v1/orgs", get(list_public_orgs))
             .route("/api/v1/orgs/:name", get(get_org_public))
             .route("/api/v1/harnesses/search", get(search_harnesses));

@@ -17,11 +17,13 @@ use crate::{
 };
 
 mod harness;
+mod device;
 mod org;
 mod team;
 mod token;
 
 pub use harness::*;
+pub use device::*;
 pub use org::*;
 pub use team::*;
 pub use token::*;

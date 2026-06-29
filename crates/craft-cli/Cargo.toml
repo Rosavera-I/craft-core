@@ -14,6 +14,10 @@ path = "src/main.rs"
 craft-core = { path = "../craft-core" }
 craft-lsp = { path = "../craft-lsp" }
 craft-memory = { path = "../craft-memory" }
+clap = "4.0"
+clap_complete = "4.5"
+dialoguer = "0.11"
+indicatif = "0.17"
 
 [lints]
 workspace = true

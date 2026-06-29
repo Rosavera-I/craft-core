@@ -1,14 +1,19 @@
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command as ProcessCommand, ExitCode};
 
+use clap::{Arg, ArgAction, Command};
+use clap_complete::{generate, shells};
 use craft_core::{
     ConflictStrategy, CraftError, CraftHome, GithubSource, HarnessManager, ValidationResult,
     compose_harnesses, plan_composition, test_installed_harness, validate_harness_project,
 };
 use craft_memory::{Memory, MemoryError, MemoryScope};
+use dialoguer::{Confirm, theme::ColorfulTheme};
+
+mod ui;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -16,10 +21,9 @@ fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            if let Some(code) = error.code() {
-                eprintln!("error[{code}]: {error}");
-            } else {
-                eprintln!("error: {error}");
+            eprintln!("{}: {error}", ui::error_label(error.code()));
+            if let Some(suggestion) = error.suggestion() {
+                eprintln!("hint: {suggestion}");
             }
             ExitCode::from(1)
         }
@@ -54,6 +58,21 @@ impl CliError {
         Self::Io {
             message: message.into(),
             source,
+        }
+    }
+
+    fn suggestion(&self) -> Option<String> {
+        match self {
+            CliError::Usage(message) => {
+                let command = message.strip_prefix("unknown command `")?.split('`').next()?;
+                suggest_command(command).map(|suggestion| format!("did you mean `craft {suggestion}`?"))
+            }
+            CliError::Core(error) => Some(format!("run `craft doctor` if the local environment may be missing dependencies; details: {}", error.code())),
+            CliError::Memory(error) => Some(format!("check the memory command arguments and scope; details: {}", error.code())),
+            CliError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound => {
+                Some("check that the path or runtime exists and try again".to_string())
+            }
+            CliError::Io { .. } | CliError::Runtime(_) => None,
         }
     }
 }
@@ -132,6 +151,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
         Some("lsp") => lsp_command(),
         Some("validate") => validate_command(&args[1..]),
         Some("memory") => memory_command(&args[1..]),
+        Some("completions") => completions_command(&args[1..]),
         Some(command) => Err(CliError::usage(format!(
             "unknown command `{command}`\n\nRun `craft --help`."
         ))),
@@ -162,10 +182,151 @@ Usage:
   craft memory inspect --scope <scope>
   craft memory search --query <query> [--scope <scope>...]
   craft memory context --query <query> [--tokens 1200] [--scope <scope>...]
+  craft completions <shell>
   craft version          Print version
   craft --help           Print help
+
+Shells:
+  bash, zsh, fish, powershell, elvish
 "
     );
+}
+
+fn completions_command(args: &[String]) -> Result<(), CliError> {
+    let shell = args
+        .first()
+        .ok_or_else(|| CliError::usage("usage: craft completions <shell>"))?;
+    let mut command = completion_command();
+    match shell.as_str() {
+        "bash" => generate(shells::Bash, &mut command, "craft", &mut io::stdout()),
+        "zsh" => generate(shells::Zsh, &mut command, "craft", &mut io::stdout()),
+        "fish" => generate(shells::Fish, &mut command, "craft", &mut io::stdout()),
+        "powershell" | "ps1" => generate(shells::PowerShell, &mut command, "craft", &mut io::stdout()),
+        "elvish" => generate(shells::Elvish, &mut command, "craft", &mut io::stdout()),
+        value => {
+            return Err(CliError::usage(format!(
+                "unknown completion shell `{value}`; use bash, zsh, fish, powershell, or elvish"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn completion_command() -> Command {
+    Command::new("craft")
+        .version(VERSION)
+        .about("CRAFT expertise harness CLI")
+        .subcommand(Command::new("init").arg(Arg::new("path")))
+        .subcommand(Command::new("doctor"))
+        .subcommand(
+            Command::new("harness")
+                .subcommand(Command::new("install").arg(Arg::new("source").required(true)))
+                .subcommand(Command::new("list"))
+                .subcommand(Command::new("info").arg(Arg::new("name").required(true)))
+                .subcommand(Command::new("test").arg(Arg::new("name").required(true)))
+                .subcommand(
+                    Command::new("uninstall")
+                        .arg(Arg::new("name").required(true))
+                        .arg(Arg::new("yes").short('y').long("yes").action(ArgAction::SetTrue)),
+                ),
+        )
+        .subcommand(
+            Command::new("compose")
+                .arg(Arg::new("harness").num_args(1..))
+                .arg(Arg::new("output").short('o').long("output").value_name("PATH"))
+                .arg(Arg::new("plan").long("plan").action(ArgAction::SetTrue))
+                .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
+                .arg(Arg::new("strategy").long("strategy").value_name("STRATEGY")),
+        )
+        .subcommand(
+            Command::new("compose-plan")
+                .arg(Arg::new("harness").num_args(1..))
+                .arg(Arg::new("strategy").long("strategy").value_name("STRATEGY")),
+        )
+        .subcommand(
+            Command::new("run")
+                .arg(Arg::new("compose"))
+                .arg(Arg::new("model").long("model").required(true).value_name("MODEL"))
+                .arg(Arg::new("runtime").long("runtime").value_name("RUNTIME"))
+                .arg(Arg::new("prompt").long("prompt").value_name("TEXT")),
+        )
+        .subcommand(Command::new("lsp"))
+        .subcommand(Command::new("validate").arg(Arg::new("path")))
+        .subcommand(
+            Command::new("memory")
+                .subcommand(
+                    Command::new("log")
+                        .arg(Arg::new("scope").required(true))
+                        .arg(Arg::new("key").required(true))
+                        .arg(Arg::new("value").required(true)),
+                )
+                .subcommand(
+                    Command::new("record")
+                        .arg(Arg::new("scope").long("scope").required(true))
+                        .arg(Arg::new("key").long("key").required(true))
+                        .arg(Arg::new("value").long("value").required(true)),
+                )
+                .subcommand(Command::new("inspect").arg(Arg::new("scope").long("scope").required(true)))
+                .subcommand(
+                    Command::new("recall")
+                        .arg(Arg::new("scope").long("scope"))
+                        .arg(Arg::new("query").long("query"))
+                        .arg(Arg::new("positional").num_args(0..)),
+                )
+                .subcommand(
+                    Command::new("search")
+                        .arg(Arg::new("query").long("query").required(true))
+                        .arg(Arg::new("scope").long("scope").action(ArgAction::Append)),
+                )
+                .subcommand(
+                    Command::new("context")
+                        .arg(Arg::new("query").long("query"))
+                        .arg(Arg::new("tokens").long("tokens"))
+                        .arg(Arg::new("scope").long("scope").action(ArgAction::Append)),
+                ),
+        )
+        .subcommand(Command::new("completions").arg(Arg::new("shell").required(true)))
+}
+
+fn suggest_command(command: &str) -> Option<&'static str> {
+    const COMMANDS: &[&str] = &[
+        "init",
+        "doctor",
+        "harness",
+        "compose",
+        "compose-plan",
+        "run",
+        "lsp",
+        "validate",
+        "memory",
+        "completions",
+        "version",
+    ];
+    COMMANDS
+        .iter()
+        .copied()
+        .filter_map(|candidate| {
+            let distance = edit_distance(command, candidate);
+            (distance <= 3).then_some((candidate, distance))
+        })
+        .min_by_key(|(_, distance)| *distance)
+        .map(|(candidate, _)| candidate)
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right.chars().enumerate() {
+            let insertion = current[right_index] + 1;
+            let deletion = previous[right_index + 1] + 1;
+            let substitution = previous[right_index] + usize::from(left_char != right_char);
+            current[right_index + 1] = insertion.min(deletion).min(substitution);
+        }
+        previous.clone_from(&current);
+    }
+    previous[right.len()]
 }
 
 fn init_project(root: &Path) -> io::Result<()> {
@@ -246,7 +407,9 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
                 CliError::usage("usage: craft harness install github:owner/repo[@ref]")
             })?;
             let source = GithubSource::parse(source)?;
+            let spinner = ui::spinner(format!("installing harness from github:{}/{}", source.owner, source.repo));
             let result = manager.install_github(&source)?;
+            ui::finish_spinner(spinner, format!("installed {}", result.harness.name));
             println!(
                 "installed {} {} from {}",
                 result.harness.name, result.harness.version, result.harness.source
@@ -259,15 +422,18 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
             if harnesses.is_empty() {
                 println!("no harnesses installed");
             } else {
-                for harness in harnesses {
-                    println!(
-                        "{}\t{}\t{}\t{}",
-                        harness.name,
-                        harness.version,
-                        harness.source,
-                        harness.path.display()
-                    );
-                }
+                let rows: Vec<Vec<String>> = harnesses
+                    .into_iter()
+                    .map(|harness| {
+                        vec![
+                            harness.name,
+                            harness.version,
+                            harness.source,
+                            harness.path.display().to_string(),
+                        ]
+                    })
+                    .collect();
+                ui::table(&["name", "version", "source", "path"], &rows);
             }
             Ok(())
         }
@@ -288,14 +454,28 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
                 .get(1)
                 .ok_or_else(|| CliError::usage("usage: craft harness test <name>"))?;
             let registry = manager.registry()?;
+            let spinner = ui::spinner(format!("testing harness {name}"));
             let result = test_installed_harness(&registry, name)?;
+            ui::finish_spinner(spinner, format!("validated {}", result.harness_name));
             print_validation_result(&result);
             Ok(())
         }
         Some("uninstall") => {
             let name = args
-                .get(1)
-                .ok_or_else(|| CliError::usage("usage: craft harness uninstall <name>"))?;
+                .iter()
+                .skip(1)
+                .find(|value| !value.starts_with('-'))
+                .ok_or_else(|| CliError::usage("usage: craft harness uninstall <name> [--yes]"))?;
+            let confirmed = args.iter().any(|value| value == "--yes" || value == "-y")
+                || !io::stdin().is_terminal()
+                || Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt(format!("Uninstall harness `{name}`?"))
+                    .default(false)
+                    .interact()
+                    .map_err(|err| CliError::io("failed to read confirmation", err))?;
+            if !confirmed {
+                return Err(CliError::Runtime("uninstall cancelled".to_string()));
+            }
             let registry = manager.registry()?;
             let harness = registry.uninstall(name, true)?;
             println!("uninstalled {}", harness.name);
@@ -312,7 +492,9 @@ fn validate_command(args: &[String]) -> Result<(), CliError> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+    let spinner = ui::spinner(format!("validating {}", root.display()));
     let result = validate_harness_project(root)?;
+    ui::finish_spinner(spinner, format!("validated {}", result.harness_name));
     print_validation_result(&result);
     Ok(())
 }
@@ -374,14 +556,18 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
     let manager = HarnessManager::new(CraftHome::from_env()?);
     let registry = manager.registry()?;
     if show_plan {
+        let spinner = ui::spinner("planning composition");
         let plan = plan_composition(&registry, &names, strategy)?;
+        ui::finish_spinner(spinner, "composition plan ready");
         print_composition_plan(&plan);
         return Ok(());
     }
 
+    let spinner = ui::spinner("composing harnesses");
     let result = compose_harnesses(&registry, &names, &output, strategy)?;
+    ui::finish_spinner(spinner, format!("wrote {}", result.output_path.display()));
     for warning in result.warnings {
-        eprintln!("warning: {warning}");
+        ui::warning(warning);
     }
     println!("wrote {}", result.output_path.display());
     Ok(())
@@ -427,7 +613,9 @@ fn compose_plan_command(args: &[String]) -> Result<(), CliError> {
 
     let manager = HarnessManager::new(CraftHome::from_env()?);
     let registry = manager.registry()?;
+    let spinner = ui::spinner("planning composition");
     let plan = plan_composition(&registry, &names, strategy)?;
+    ui::finish_spinner(spinner, "composition plan ready");
     print_composition_plan(&plan);
     Ok(())
 }
@@ -486,15 +674,18 @@ fn run_compose_command(args: &[String]) -> Result<(), CliError> {
     let system_prompt = load_compose_system_prompt(&compose_path)?;
     let prompt = runtime_prompt(&system_prompt, user_prompt.as_deref());
 
-    let status = Command::new(&runtime)
+    let spinner = ui::spinner(format!("running {model} with {runtime}"));
+    let status = ProcessCommand::new(&runtime)
         .arg("run")
         .arg(&model)
         .arg(prompt)
         .status()
         .map_err(|err| CliError::io(format!("failed to run {runtime}: {err}"), err))?;
     if status.success() {
+        ui::finish_spinner(spinner, format!("{runtime} completed"));
         Ok(())
     } else {
+        spinner.finish_and_clear();
         Err(CliError::Runtime(format!(
             "{runtime} exited with status {status}"
         )))
