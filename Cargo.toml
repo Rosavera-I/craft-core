@@ -6,6 +6,9 @@ members = [
     "crates/craft-lsp",
     "crates/craft-manifest",
     "crates/craft-memory",
+    "crates/craft-registry",
+    "crates/craft-web",
+    "crates/craft-bridge",
 ]
 
 [workspace.package]

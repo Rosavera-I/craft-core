@@ -1,0 +1,49 @@
+[package]
+name = "craft-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "craft-web"
+path = "src/main.rs"
+
+[dependencies]
+craft-core = { path = "../craft-core" }
+craft-memory = { path = "../craft-memory" }
+craft-manifest = { path = "../craft-manifest" }
+
+# Axum and HTTP
+axum = { version = "0.7", features = ["ws", "macros"] }
+tokio = { version = "1.35", features = ["full"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+hyper = { version = "1.1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Errors
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+serde_urlencoded = "0.7"
+
+# WebSocket
+futures = "0.3"
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.11", features = ["json"] }
+
+[lints]
+workspace = true

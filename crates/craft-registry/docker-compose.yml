@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: craft-registry-db
+    environment:
+      POSTGRES_USER: craft
+      POSTGRES_PASSWORD: craft_secret
+      POSTGRES_DB: craft_registry
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U craft -d craft_registry"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (S3-compatible storage)
+  minio:
+    image: minio/minio:latest
+    container_name: craft-registry-storage
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Create MinIO bucket
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/craft-packages;
+      /usr/bin/mc policy set public myminio/craft-packages;
+      exit 0;
+      "
+
+  # Redis (for caching and rate limiting)
+  redis:
+    image: redis:7-alpine
+    container_name: craft-registry-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # CRAFT Registry server
+  registry:
+    build:
+      context: ../..
+      dockerfile: crates/craft-registry/Dockerfile
+    container_name: craft-registry-server
+    environment:
+      DATABASE_URL: postgres://craft:craft_secret@postgres:5432/craft_registry
+      REDIS_URL: redis://redis:6379
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      RUST_LOG: debug
+      BIND_ADDRESS: 0.0.0.0
+      PORT: 8080
+      STORAGE_TYPE: local
+      STORAGE_BASE_PATH: /var/lib/craft-registry/packages
+      MAX_PACKAGE_SIZE: 104857600  # 100MB
+      RATE_LIMIT_REQUESTS: 100
+      RATE_LIMIT_WINDOW_SECS: 60
+    ports:
+      - "8080:8080"
+    volumes:
+      - registry_data:/var/lib/craft-registry
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  registry_data:

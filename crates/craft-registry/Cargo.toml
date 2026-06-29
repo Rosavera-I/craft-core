@@ -1,0 +1,86 @@
+[package]
+name = "craft-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+craft-core = { path = "../craft-core" }
+craft-manifest = { path = "../craft-manifest" }
+
+# Server
+axum = { version = "0.7", features = ["multipart", "macros"] }
+tokio = { version = "1.0", features = ["full"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-br"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate", "json", "ipnetwork"] }
+
+# Random
+rand = "0.8"
+
+# Git
+git2 = "0.19"
+
+# Auth & JWT
+jsonwebtoken = "9.0"
+ring = "0.17"
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["alloc"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Version handling
+semver = { version = "1.0", features = ["serde"] }
+
+# HTTP Client
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
+bytes = "1.0"
+
+# Storage & Crypto
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1.0"
+tempfile = "3.0"
+walkdir = "2.0"
+
+# IDs & Time
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+dialoguer = "0.11"
+indicatif = "0.17"
+
+# Logging & Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# URL handling
+url = { version = "2.0", features = ["serde"] }
+
+# Async trait
+async-trait = "0.1"
+
+# Config
+dirs = "5.0"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+http-body-util = "0.1"
+mime = "0.3"
+
+[lints]
+workspace = true
