@@ -99,3 +99,20 @@ impl std::fmt::Display for TokenScope {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_prefix_keeps_first_twelve_characters() {
+        assert_eq!(token_prefix("crp_1234567890abcdef"), "crp_12345678");
+    }
+
+    #[test]
+    fn token_scope_display_matches_database_values() {
+        assert_eq!(TokenScope::Read.to_string(), "read");
+        assert_eq!(TokenScope::Write.to_string(), "write");
+        assert_eq!(TokenScope::Admin.to_string(), "admin");
+    }
+}

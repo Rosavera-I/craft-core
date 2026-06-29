@@ -582,3 +582,47 @@ pub async fn require_admin(request: Request, next: Next) -> Result<Response, Res
 
     Ok(next.run(request).await)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn token_scope_satisfies_expected_permissions() {
+        assert!(TokenScope::Admin.satisfies(TokenScope::Read));
+        assert!(TokenScope::Admin.satisfies(TokenScope::Write));
+        assert!(TokenScope::Admin.satisfies(TokenScope::Admin));
+        assert!(TokenScope::Write.satisfies(TokenScope::Read));
+        assert!(!TokenScope::Read.satisfies(TokenScope::Write));
+        assert!(!TokenScope::Read.satisfies(TokenScope::Admin));
+    }
+
+    #[test]
+    fn token_scope_parses_database_values() -> Result<(), String> {
+        assert_eq!(TokenScope::from_str("read")?, TokenScope::Read);
+        assert_eq!(TokenScope::from_str("write")?, TokenScope::Write);
+        assert_eq!(TokenScope::from_str("admin")?, TokenScope::Admin);
+        assert!(TokenScope::from_str("owner").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn generated_tokens_are_ascii_alphanumeric() {
+        let token = generate_secure_token(32);
+
+        assert_eq!(token.len(), 32);
+        assert!(token.chars().all(|ch| ch.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn token_hash_is_stable_and_not_plaintext() {
+        let token = "crp_test_token";
+        let first_hash = hash_token(token);
+        let second_hash = hash_token(token);
+
+        assert_eq!(first_hash, second_hash);
+        assert_ne!(first_hash, token);
+        assert_eq!(first_hash.len(), 64);
+    }
+}

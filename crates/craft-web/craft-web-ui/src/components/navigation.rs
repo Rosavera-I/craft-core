@@ -34,8 +34,8 @@ pub fn Navigation() -> impl IntoView {
                 justify-content: space-between;
                 align-items: center;
                 padding: 1rem 2rem;
-                background-color: #16213e;
-                border-bottom: 1px solid #0f3460;
+                background-color: var(--craft-surface);
+                border-bottom: 1px solid var(--craft-border-strong);
             }
             .nav-brand {
                 display: flex;
@@ -45,30 +45,30 @@ pub fn Navigation() -> impl IntoView {
             .logo {
                 font-size: 1.5rem;
                 font-weight: bold;
-                color: #e94560;
+                color: var(--craft-accent);
             }
             .tagline {
                 font-size: 0.9rem;
-                color: #a0a0a0;
+                color: var(--craft-text-muted);
             }
             .nav-links {
                 display: flex;
                 gap: 1.5rem;
             }
             .nav-link {
-                color: #a0a0a0;
+                color: var(--craft-text-muted);
                 text-decoration: none;
                 padding: 0.5rem 1rem;
                 border-radius: 4px;
                 transition: all 0.2s;
             }
             .nav-link:hover {
-                color: #e0e0e0;
-                background-color: #0f3460;
+                color: var(--craft-text);
+                background-color: var(--craft-border-strong);
             }
             .nav-link-active {
-                color: #e94560;
-                background-color: rgba(233, 69, 96, 0.1);
+                color: var(--craft-accent);
+                background-color: var(--craft-accent-soft);
             }
             "
         </style>

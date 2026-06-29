@@ -21,9 +21,9 @@ fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{}: {error}", ui::error_label(error.code()));
+            ui::error(error.to_string(), error.code());
             if let Some(suggestion) = error.suggestion() {
-                eprintln!("hint: {suggestion}");
+                ui::hint(suggestion);
             }
             ExitCode::from(1)
         }
@@ -140,7 +140,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
             Ok(())
         }
         Some("--version" | "-V" | "version") => {
-            println!("craft {VERSION}");
+            ui::message(format!("craft {VERSION}"));
             Ok(())
         }
         Some("init") => {
@@ -148,7 +148,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
                 .get(1)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
-            init_project(&target).map_err(Into::into)
+            init_project(&target)
         }
         Some("doctor") => {
             doctor();
@@ -349,7 +349,7 @@ fn login_command(args: &[String]) -> Result<(), CliError> {
                 })?;
             }
             "-h" | "--help" => {
-                println!("usage: craft login --api-key <key> [--registry <url>]");
+                ui::message("usage: craft login --api-key <key> [--registry <url>]");
                 return Ok(());
             }
             value => {
@@ -365,7 +365,10 @@ fn login_command(args: &[String]) -> Result<(), CliError> {
     let config_path = default_registry_config_path();
     save_registry_credentials(&config_path, &registry, &api_key)?;
 
-    println!("Registry credentials saved to {}", config_path.display());
+    ui::success(format!(
+        "registry credentials saved to {}",
+        config_path.display()
+    ));
     Ok(())
 }
 
@@ -443,12 +446,12 @@ fn edit_distance(left: &str, right: &str) -> usize {
     previous[right.len()]
 }
 
-fn init_project(root: &Path) -> io::Result<()> {
-    fs::create_dir_all(root.join(".craft"))?;
-    fs::create_dir_all(root.join("prompts"))?;
-    fs::create_dir_all(root.join("memory"))?;
-    fs::create_dir_all(root.join("tools"))?;
-    fs::create_dir_all(root.join("validators"))?;
+fn init_project(root: &Path) -> Result<(), CliError> {
+    create_project_dir(root.join(".craft"))?;
+    create_project_dir(root.join("prompts"))?;
+    create_project_dir(root.join("memory"))?;
+    create_project_dir(root.join("tools"))?;
+    create_project_dir(root.join("validators"))?;
 
     write_if_missing(
         root.join("prompts/system.md"),
@@ -468,14 +471,21 @@ fn init_project(root: &Path) -> io::Result<()> {
     )?;
     write_if_missing(root.join("craft.toml"), default_manifest())?;
 
-    println!("initialized CRAFT project at {}", root.display());
+    ui::success(format!("initialized CRAFT project at {}", root.display()));
     Ok(())
 }
 
-fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> io::Result<()> {
+fn create_project_dir(path: impl AsRef<Path>) -> Result<(), CliError> {
+    let path = path.as_ref();
+    fs::create_dir_all(path)
+        .map_err(|err| CliError::io(format!("failed to create {}", path.display()), err))
+}
+
+fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<(), CliError> {
     let path = path.as_ref();
     if !path.exists() {
-        fs::write(path, contents)?;
+        fs::write(path, contents)
+            .map_err(|err| CliError::io(format!("failed to write {}", path.display()), err))?;
     }
     Ok(())
 }
@@ -527,10 +537,10 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
             ));
             let result = manager.install_github(&source)?;
             ui::finish_spinner(spinner, format!("installed {}", result.harness.name));
-            println!(
+            ui::success(format!(
                 "installed {} {} from {}",
                 result.harness.name, result.harness.version, result.harness.source
-            );
+            ));
             Ok(())
         }
         Some("list") => {
@@ -595,7 +605,7 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
             }
             let registry = manager.registry()?;
             let harness = registry.uninstall(name, true)?;
-            println!("uninstalled {}", harness.name);
+            ui::success(format!("uninstalled {}", harness.name));
             Ok(())
         }
         _ => Err(CliError::usage(
@@ -617,7 +627,7 @@ fn validate_command(args: &[String]) -> Result<(), CliError> {
 }
 
 fn print_validation_result(result: &ValidationResult) {
-    println!("validated {}", result.harness_name);
+    ui::success(format!("validated {}", result.harness_name));
     println!("manifest: ok");
     if result.checks_run {
         let runner = result.runner.as_deref().unwrap_or("tdd-dsl");
@@ -686,7 +696,7 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
     for warning in result.warnings {
         ui::warning(warning);
     }
-    println!("wrote {}", result.output_path.display());
+    ui::success(format!("wrote {}", result.output_path.display()));
     Ok(())
 }
 

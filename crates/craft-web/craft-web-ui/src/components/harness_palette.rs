@@ -2,6 +2,7 @@
 
 use crate::api::{ApiClient, HarnessInfo};
 use leptos::*;
+use web_sys::KeyboardEvent;
 
 fn matches_harness(harness: &HarnessInfo, query: &str, source_filter: &str) -> bool {
     let q = query.trim().to_lowercase();
@@ -83,9 +84,15 @@ pub fn HarnessPalette(
             <div class="harness-list">
                 {move || {
                     if loading.get() {
-                        view! { <p class="loading">"Loading harnesses..."</p> }.into_view()
+                        view! {
+                            <div class="palette-skeleton" aria-label="Loading harnesses">
+                                <div></div>
+                                <div></div>
+                                <div></div>
+                            </div>
+                        }.into_view()
                     } else if let Some(err) = error.get() {
-                        view! { <p class="error">{err}</p> }.into_view()
+                        view! { <p class="error" role="alert">{err}</p> }.into_view()
                     } else {
                         let items = filtered();
                         if items.is_empty() {
@@ -99,6 +106,7 @@ pub fn HarnessPalette(
                                         .map(|s| s.name == harness.name)
                                         .unwrap_or(false);
                                     let select_harness = harness.clone();
+                                    let keyboard_harness = harness.clone();
                                     let drag_harness = harness.clone();
                                     let authors = if harness.authors.is_empty() {
                                         "Unknown author".to_string()
@@ -114,6 +122,9 @@ pub fn HarnessPalette(
                                                 "harness-item"
                                             }}
                                             draggable="true"
+                                            role="button"
+                                            tabindex="0"
+                                            aria-label={format!("Add {} to composition", harness.name)}
                                             on:dragstart=move |e| {
                                                 let data = serde_json::to_string(&drag_harness).unwrap_or_default();
                                                 let _ = e.data_transfer().map(|dt| {
@@ -122,6 +133,13 @@ pub fn HarnessPalette(
                                                 });
                                             }
                                             on:click=move |_| on_select.call(select_harness.clone())
+                                            on:keydown=move |ev: KeyboardEvent| {
+                                                let key = ev.key();
+                                                if key == "Enter" || key == " " {
+                                                    ev.prevent_default();
+                                                    on_select.call(keyboard_harness.clone());
+                                                }
+                                            }
                                         >
                                             <div class="harness-drag-handle" title="Drag to composer">"::"</div>
                                             <div class="harness-info">

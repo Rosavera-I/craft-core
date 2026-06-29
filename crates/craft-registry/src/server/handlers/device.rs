@@ -27,41 +27,57 @@ const DEVICE_AUTH_INTERVAL_SECS: i64 = 5;
 /// Device authorization initiation request.
 #[derive(Debug, Deserialize)]
 pub struct InitiateDeviceRequest {
+    /// OAuth client identifier for the requesting CLI or app.
     pub client_id: String,
 }
 
 /// Device authorization response for CLI clients.
 #[derive(Debug, Serialize)]
 pub struct DeviceAuthorizationResponse {
+    /// Opaque code used by the CLI to poll for completion.
     pub device_code: String,
+    /// Short code shown to the user during browser verification.
     pub user_code: String,
+    /// Browser URL where the user completes authorization.
     pub verification_uri: String,
+    /// Lifetime of the device authorization in seconds.
     pub expires_in: i64,
+    /// Minimum polling interval in seconds.
     pub interval: i64,
 }
 
 /// Device authorization polling request.
 #[derive(Debug, Deserialize)]
 pub struct PollDeviceRequest {
+    /// Opaque device code returned by device authorization initiation.
     pub device_code: String,
 }
 
 /// Device authorization polling response.
 #[derive(Debug, Serialize)]
 pub struct DevicePollResponse {
+    /// Short-lived access JWT when authorization has completed.
     pub access_token: Option<String>,
+    /// Long-lived refresh JWT when authorization has completed.
     pub refresh_token: Option<String>,
+    /// Token type for successful responses.
     pub token_type: Option<String>,
+    /// Access token lifetime in seconds for successful responses.
     pub expires_in: Option<i64>,
+    /// OAuth device-flow error code for pending or failed grants.
     pub error: Option<String>,
 }
 
 /// GitHub OAuth callback query parameters.
 #[derive(Debug, Deserialize)]
 pub struct GithubCallbackQuery {
+    /// GitHub authorization code.
     pub code: Option<String>,
+    /// Device user code, carried through the OAuth state parameter.
     pub state: Option<String>,
+    /// GitHub OAuth error code.
     pub error: Option<String>,
+    /// Optional GitHub OAuth error description.
     pub error_description: Option<String>,
 }
 
@@ -234,7 +250,7 @@ fn random_alphanumeric(length: usize) -> String {
 }
 
 fn github_authorization_uri(state: &AppState, user_code: &str) -> RegistryResult<String> {
-    let client_id = config
+    let client_id = state
         .config
         .github_oauth_client_id
         .as_deref()
@@ -319,4 +335,83 @@ async fn fetch_primary_github_email(access_token: &str) -> RegistryResult<String
         .find(|email| email.primary && email.verified)
         .map(|email| email.email)
         .ok_or_else(|| RegistryError::Auth("GitHub account has no verified primary email".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{db::Database, RegistryConfig, StorageConfig};
+    use sqlx::postgres::PgPoolOptions;
+
+    fn test_state(config: RegistryConfig) -> RegistryResult<AppState> {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/craft_test")
+            .map_err(|err| RegistryError::Database(err))?;
+        Ok(AppState {
+            config,
+            db: Database::from_pool(pool),
+        })
+    }
+
+    #[test]
+    fn error_response_only_sets_error_code() {
+        let response = error_response("authorization_pending");
+
+        assert_eq!(response.error.as_deref(), Some("authorization_pending"));
+        assert!(response.access_token.is_none());
+        assert!(response.refresh_token.is_none());
+        assert!(response.token_type.is_none());
+        assert!(response.expires_in.is_none());
+    }
+
+    #[test]
+    fn random_alphanumeric_has_expected_length() {
+        let token = random_alphanumeric(DEVICE_CODE_LEN);
+
+        assert_eq!(token.len(), DEVICE_CODE_LEN);
+        assert!(token.chars().all(|ch| ch.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn github_authorization_uri_uses_configured_client_and_state() -> RegistryResult<()> {
+        let state = test_state(RegistryConfig {
+            public_base_url: "https://registry.example.com".to_string(),
+            github_oauth_client_id: Some("client-123".to_string()),
+            github_oauth_redirect_uri: Some(
+                "https://registry.example.com/oauth/callback".to_string(),
+            ),
+            storage: StorageConfig::default(),
+            ..RegistryConfig::default()
+        })?;
+
+        let uri = github_authorization_uri(&state, "ABCD1234")?;
+        let parsed =
+            Url::parse(&uri).map_err(|err| RegistryError::Validation(err.to_string()))?;
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+
+        assert_eq!(
+            parsed.as_str().split('?').next(),
+            Some("https://github.com/login/oauth/authorize")
+        );
+        assert_eq!(params.get("client_id").map(String::as_str), Some("client-123"));
+        assert_eq!(params.get("state").map(String::as_str), Some("ABCD1234"));
+        assert_eq!(
+            params.get("redirect_uri").map(String::as_str),
+            Some("https://registry.example.com/oauth/callback")
+        );
+        assert_eq!(params.get("scope").map(String::as_str), Some("read:user user:email"));
+        Ok(())
+    }
+
+    #[test]
+    fn github_authorization_uri_requires_client_id() -> RegistryResult<()> {
+        let state = test_state(RegistryConfig::default())?;
+
+        let error = github_authorization_uri(&state, "ABCD1234")
+            .err()
+            .ok_or_else(|| RegistryError::Internal("expected missing client id error".to_string()))?;
+
+        assert!(matches!(error, RegistryError::Config(_)));
+        Ok(())
+    }
 }

@@ -37,6 +37,7 @@ web-sys = { version = "0.3", features = [
     "DataTransfer",
     "DragEvent",
     "Headers",
+    "KeyboardEvent",
     "MessageEvent",
     "MouseEvent",
     "Request",

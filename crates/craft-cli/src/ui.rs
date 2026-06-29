@@ -18,6 +18,14 @@ pub fn warning(message: impl AsRef<str>) {
     );
 }
 
+pub fn error(message: impl AsRef<str>, code: Option<&str>) {
+    eprintln!("{}: {}", error_label(code), message.as_ref());
+}
+
+pub fn hint(message: impl AsRef<str>) {
+    eprintln!("hint: {}", message.as_ref());
+}
+
 pub fn success(message: impl AsRef<str>) {
     println!(
         "{} {}",
@@ -32,6 +40,10 @@ pub fn status(message: impl AsRef<str>) {
         paint_stdout("==>".to_string(), "36"),
         message.as_ref()
     );
+}
+
+pub fn message(message: impl AsRef<str>) {
+    println!("{}", message.as_ref());
 }
 
 pub fn spinner(message: impl Into<String>) -> ProgressBar {

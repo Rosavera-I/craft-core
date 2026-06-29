@@ -33,6 +33,11 @@ impl Database {
         Ok(Self { pool })
     }
 
+    /// Wrap an existing PostgreSQL connection pool.
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
     /// Get a reference to the underlying pool
     pub fn pool(&self) -> &PgPool {
         &self.pool
