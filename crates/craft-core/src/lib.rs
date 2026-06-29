@@ -675,31 +675,31 @@ impl HarnessRegistry {
         // Check if this was the default BEFORE deleting
         let was_default: bool = conn.query_row(
             "SELECT 1 FROM default_versions WHERE name = ?1 AND version = ?2;",
-            params![&harness.name, &harness.version],
+            params![name, &harness.version],
             |_| Ok(true),
         ).unwrap_or(false);
         
         conn.execute("DELETE FROM harnesses WHERE name = ?1 AND version = ?2;", 
-            params![&harness.name, &harness.version])?;
+            params![name, &harness.version])?;
         
         // Update default version if this was the default
         if was_default {
             // Find another version to set as default
             let new_default: Option<String> = conn.query_row(
                 "SELECT version FROM harnesses WHERE name = ?1 ORDER BY version DESC LIMIT 1;",
-                params![&harness.name],
+                params![name],
                 |row| row.get(0),
             ).optional()?;
             
             if let Some(v) = new_default {
                 conn.execute(
                     "INSERT OR REPLACE INTO default_versions (name, version) VALUES (?1, ?2);",
-                    params![&harness.name, v],
+                    params![name, v],
                 )?;
             } else {
                 conn.execute(
                     "DELETE FROM default_versions WHERE name = ?1;",
-                    params![&harness.name],
+                    params![name],
                 )?;
             }
         }
