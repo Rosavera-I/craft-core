@@ -66,7 +66,15 @@ impl VersionConstraint {
             let major = version.major;
             let minor = version.minor;
             let patch = version.patch;
-            let req_str = format!(">={}.{}.{},<{}.{}.{}", major, minor, patch, major, minor + 1, 0);
+            let req_str = format!(
+                ">={}.{}.{},<{}.{}.{}",
+                major,
+                minor,
+                patch,
+                major,
+                minor + 1,
+                0
+            );
             return Ok(Self {
                 req: VersionReq::parse(&req_str).map_err(|e| VersionError::InvalidRange {
                     input: trimmed.to_string(),
@@ -104,7 +112,7 @@ impl VersionConstraint {
                     return Err(VersionError::InvalidRange {
                         input: trimmed.to_string(),
                         reason: "invalid wildcard format".to_string(),
-                    })
+                    });
                 }
             };
             return Ok(Self {
@@ -117,14 +125,20 @@ impl VersionConstraint {
         }
 
         // Try parsing as standard version requirement
-        let req = if trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        let req = if trimmed
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             // Starts with digit, treat as exact version
             let version = parse_version(trimmed)?;
-            VersionReq::parse(&format!(">={}", version))
-                .map_err(|e| VersionError::InvalidRange {
+            VersionReq::parse(&format!(">={}", version)).map_err(|e| {
+                VersionError::InvalidRange {
                     input: trimmed.to_string(),
                     reason: e.to_string(),
-                })?
+                }
+            })?
         } else {
             VersionReq::parse(trimmed).map_err(|e| VersionError::InvalidRange {
                 input: trimmed.to_string(),
@@ -268,7 +282,10 @@ impl VersionResolver {
             })?;
 
         // Sort by version descending to get highest matching version first
-        let mut matches: Vec<_> = versions.iter().filter(|v| constraint.matches(&v.version)).collect();
+        let mut matches: Vec<_> = versions
+            .iter()
+            .filter(|v| constraint.matches(&v.version))
+            .collect();
         matches.sort_by(|a, b| b.version.cmp(&a.version));
 
         Ok(matches.into_iter().next().cloned())
@@ -295,15 +312,16 @@ impl VersionResolver {
 
         for (name, deps) in grouped {
             // Merge all constraints for this harness
-            let versions = self.available.get(&name).ok_or_else(|| {
-                VersionError::NoMatchingVersion {
-                    name: name.clone(),
-                    constraint: deps
-                        .first()
-                        .map(|d| d.constraint.original.clone())
-                        .unwrap_or_default(),
-                }
-            })?;
+            let versions =
+                self.available
+                    .get(&name)
+                    .ok_or_else(|| VersionError::NoMatchingVersion {
+                        name: name.clone(),
+                        constraint: deps
+                            .first()
+                            .map(|d| d.constraint.original.clone())
+                            .unwrap_or_default(),
+                    })?;
 
             // Find versions that satisfy ALL constraints
             let mut valid_versions: Vec<_> = versions
@@ -325,7 +343,11 @@ impl VersionResolver {
 
             // Sort by version descending and pick the highest
             valid_versions.sort_by(|a, b| b.version.cmp(&a.version));
-            let best = valid_versions.into_iter().next().unwrap();
+            let Some(best) = valid_versions.into_iter().next() else {
+                return Err(VersionError::Conflict {
+                    message: format!("no valid versions found for '{name}' after filtering"),
+                });
+            };
 
             let requested_by = deps.iter().map(|d| d.requested_by.clone()).collect();
 
@@ -419,9 +441,24 @@ mod tests {
     #[test]
     fn resolve_simple_dependency() {
         let mut resolver = VersionResolver::new();
-        resolver.add_version("test-harness", Version::parse("1.0.0").unwrap(), "github:owner/repo", "/path/v1");
-        resolver.add_version("test-harness", Version::parse("1.1.0").unwrap(), "github:owner/repo", "/path/v1.1");
-        resolver.add_version("test-harness", Version::parse("2.0.0").unwrap(), "github:owner/repo", "/path/v2");
+        resolver.add_version(
+            "test-harness",
+            Version::parse("1.0.0").unwrap(),
+            "github:owner/repo",
+            "/path/v1",
+        );
+        resolver.add_version(
+            "test-harness",
+            Version::parse("1.1.0").unwrap(),
+            "github:owner/repo",
+            "/path/v1.1",
+        );
+        resolver.add_version(
+            "test-harness",
+            Version::parse("2.0.0").unwrap(),
+            "github:owner/repo",
+            "/path/v2",
+        );
 
         let deps = vec![HarnessDependency {
             name: "test-harness".to_string(),
@@ -437,8 +474,18 @@ mod tests {
     #[test]
     fn resolve_conflicting_versions() {
         let mut resolver = VersionResolver::new();
-        resolver.add_version("dep-a", Version::parse("1.0.0").unwrap(), "source1", "/path");
-        resolver.add_version("dep-a", Version::parse("2.0.0").unwrap(), "source1", "/path");
+        resolver.add_version(
+            "dep-a",
+            Version::parse("1.0.0").unwrap(),
+            "source1",
+            "/path",
+        );
+        resolver.add_version(
+            "dep-a",
+            Version::parse("2.0.0").unwrap(),
+            "source1",
+            "/path",
+        );
 
         let deps = vec![
             HarnessDependency {
@@ -460,9 +507,24 @@ mod tests {
     #[test]
     fn resolve_compatible_constraints() {
         let mut resolver = VersionResolver::new();
-        resolver.add_version("dep-a", Version::parse("1.2.0").unwrap(), "source1", "/path");
-        resolver.add_version("dep-a", Version::parse("1.5.0").unwrap(), "source1", "/path");
-        resolver.add_version("dep-a", Version::parse("2.0.0").unwrap(), "source1", "/path");
+        resolver.add_version(
+            "dep-a",
+            Version::parse("1.2.0").unwrap(),
+            "source1",
+            "/path",
+        );
+        resolver.add_version(
+            "dep-a",
+            Version::parse("1.5.0").unwrap(),
+            "source1",
+            "/path",
+        );
+        resolver.add_version(
+            "dep-a",
+            Version::parse("2.0.0").unwrap(),
+            "source1",
+            "/path",
+        );
 
         let deps = vec![
             HarnessDependency {
@@ -484,8 +546,18 @@ mod tests {
     #[test]
     fn resolve_multiple_dependencies() {
         let mut resolver = VersionResolver::new();
-        resolver.add_version("harness-a", Version::parse("1.0.0").unwrap(), "source1", "/path/a1");
-        resolver.add_version("harness-b", Version::parse("2.0.0").unwrap(), "source2", "/path/b2");
+        resolver.add_version(
+            "harness-a",
+            Version::parse("1.0.0").unwrap(),
+            "source1",
+            "/path/a1",
+        );
+        resolver.add_version(
+            "harness-b",
+            Version::parse("2.0.0").unwrap(),
+            "source2",
+            "/path/b2",
+        );
 
         let deps = vec![
             HarnessDependency {

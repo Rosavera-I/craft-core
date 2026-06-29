@@ -357,8 +357,11 @@ fn compose_command(args: &[String]) -> Result<(), CliError> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| CliError::usage("craft compose --strategy requires a value"))?;
-                strategy = ConflictStrategy::from_string(value)
-                    .ok_or_else(|| CliError::usage(format!("unknown strategy `{value}`; use ordered-merge, merge, override, or fail")))?;
+                strategy = ConflictStrategy::from_string(value).ok_or_else(|| {
+                    CliError::usage(format!(
+                        "unknown strategy `{value}`; use ordered-merge, merge, override, or fail"
+                    ))
+                })?;
                 index += 2;
             }
             value => {
@@ -405,11 +408,14 @@ fn compose_plan_command(args: &[String]) -> Result<(), CliError> {
                 ));
             }
             "--strategy" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| CliError::usage("craft compose-plan --strategy requires a value"))?;
-                strategy = ConflictStrategy::from_string(value)
-                    .ok_or_else(|| CliError::usage(format!("unknown strategy `{value}`; use ordered-merge, merge, override, or fail")))?;
+                let value = args.get(index + 1).ok_or_else(|| {
+                    CliError::usage("craft compose-plan --strategy requires a value")
+                })?;
+                strategy = ConflictStrategy::from_string(value).ok_or_else(|| {
+                    CliError::usage(format!(
+                        "unknown strategy `{value}`; use ordered-merge, merge, override, or fail"
+                    ))
+                })?;
                 index += 2;
             }
             value => {

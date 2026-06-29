@@ -10,9 +10,11 @@ use craft_manifest::{Manifest, ManifestError, load_manifest};
 use rusqlite::{Connection, OptionalExtension, params};
 use semver::Version;
 
-
 pub mod version;
-pub use version::{VersionConstraint, VersionError, VersionResolver, ResolvedVersion, VersionedHarness, HarnessDependency};
+pub use version::{
+    HarnessDependency, ResolvedVersion, VersionConstraint, VersionError, VersionResolver,
+    VersionedHarness,
+};
 
 #[derive(Debug, Clone)]
 pub struct HarnessProject {
@@ -111,23 +113,32 @@ impl GithubSource {
     }
 
     /// Parse a source with optional version constraint (e.g., ^1.2.0, ~2.0.0)
-    pub fn parse_with_constraint(input: &str) -> Result<(Self, Option<VersionConstraint>), CraftError> {
+    pub fn parse_with_constraint(
+        input: &str,
+    ) -> Result<(Self, Option<VersionConstraint>), CraftError> {
         let raw = input.strip_prefix("github:").ok_or_else(|| {
             CraftError::InvalidSource("source must start with github:".to_string())
         })?;
-        
+
         // Try to extract version constraint
         let (path, reference, constraint) = match raw.split_once('@') {
             Some((path, reference)) if !reference.trim().is_empty() => {
                 let reference = reference.trim();
                 // Check if reference looks like a version constraint
-                if reference.starts_with('^') || reference.starts_with('~') || 
-                   reference.starts_with(">=") || reference.starts_with('<') ||
-                   reference.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                if reference.starts_with('^')
+                    || reference.starts_with('~')
+                    || reference.starts_with(">=")
+                    || reference.starts_with('<')
+                    || reference
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                {
                     // Try to parse as version constraint
                     match VersionConstraint::parse(reference) {
                         Ok(constraint) => (path, None, Some(constraint)),
-                        Err(_) => (path, Some(reference.to_string()), None)
+                        Err(_) => (path, Some(reference.to_string()), None),
                     }
                 } else {
                     (path, Some(reference.to_string()), None)
@@ -140,20 +151,20 @@ impl GithubSource {
             }
             None => (raw, None, None),
         };
-        
+
         let (owner, repo) = path.split_once('/').ok_or_else(|| {
             CraftError::InvalidSource("github source must be github:owner/repo".to_string())
         })?;
         validate_slug("owner", owner)?;
         validate_slug("repo", repo)?;
-        
+
         Ok((
             Self {
                 owner: owner.to_string(),
                 repo: repo.to_string(),
                 reference,
             },
-            constraint
+            constraint,
         ))
     }
 
@@ -195,18 +206,13 @@ pub struct ArtifactConflict {
     pub key: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ConflictStrategy {
+    #[default]
     OrderedMerge,
     Merge,
     Override,
     Fail,
-}
-
-impl Default for ConflictStrategy {
-    fn default() -> Self {
-        Self::OrderedMerge
-    }
 }
 
 impl ConflictStrategy {
@@ -415,12 +421,12 @@ impl HarnessManager {
         constraint: &VersionConstraint,
     ) -> Result<InstallResult, CraftError> {
         let registry = HarnessRegistry::open(self.home.registry_path())?;
-        
+
         // Check if a matching version already exists
         if let Some(existing) = registry.find_version(&source.repo, constraint)? {
             return Ok(InstallResult { harness: existing });
         }
-        
+
         // Otherwise, install from source
         self.install_github(source)
     }
@@ -442,9 +448,9 @@ impl HarnessManager {
     ) -> Result<Vec<ResolvedVersion>, CraftError> {
         let registry = HarnessRegistry::open(self.home.registry_path())?;
         let resolver = registry.to_version_resolver()?;
-        resolver.resolve_dependencies(dependencies).map_err(|e| {
-            CraftError::InvalidSource(e.to_string())
-        })
+        resolver
+            .resolve_dependencies(dependencies)
+            .map_err(|e| CraftError::InvalidSource(e.to_string()))
     }
 
     pub fn registry(&self) -> Result<HarnessRegistry, CraftError> {
@@ -470,7 +476,7 @@ impl HarnessRegistry {
 
     fn init_schema(&self) -> Result<(), CraftError> {
         let conn = self.connection()?;
-        
+
         // Create harnesses table (primary version tracking - allows multiple versions)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS harnesses (
@@ -485,9 +491,7 @@ impl HarnessRegistry {
         )?;
 
         // Create index for fast lookups by name
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_harnesses_name ON harnesses(name);",
-        )?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_harnesses_name ON harnesses(name);")?;
 
         // Create default_versions table for tracking which version is the default
         conn.execute_batch(
@@ -519,15 +523,17 @@ impl HarnessRegistry {
                 harness.path.to_string_lossy()
             ],
         )?;
-        
+
         // Set as default if no default exists for this harness
         let conn = self.connection()?;
-        let has_default: bool = conn.query_row(
-            "SELECT 1 FROM default_versions WHERE name = ?1;",
-            params![&harness.name],
-            |_| Ok(true),
-        ).unwrap_or(false);
-        
+        let has_default: bool = conn
+            .query_row(
+                "SELECT 1 FROM default_versions WHERE name = ?1;",
+                params![&harness.name],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
         if !has_default {
             conn.execute(
                 "INSERT OR REPLACE INTO default_versions (name, version)
@@ -535,20 +541,21 @@ impl HarnessRegistry {
                 params![&harness.name, &harness.version],
             )?;
         }
-        
+
         Ok(())
     }
 
     /// List all harnesses (one entry per harness, using default version)
     pub fn list(&self) -> Result<Vec<InstalledHarness>, CraftError> {
         let connection = self.connection()?;
-        let mut statement = connection
-            .prepare("
+        let mut statement = connection.prepare(
+            "
                 SELECT h.name, h.version, h.source, h.path 
                 FROM harnesses h
                 JOIN default_versions d ON h.name = d.name AND h.version = d.version
                 ORDER BY h.name;
-            ")?;
+            ",
+        )?;
         let rows = statement.query_map([], installed_harness_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -557,13 +564,14 @@ impl HarnessRegistry {
     pub fn list_versions(&self, name: &str) -> Result<Vec<InstalledHarness>, CraftError> {
         validate_harness_name(name)?;
         let connection = self.connection()?;
-        let mut statement = connection
-            .prepare("
+        let mut statement = connection.prepare(
+            "
                 SELECT name, version, source, path 
                 FROM harnesses 
                 WHERE name = ?1
                 ORDER BY version DESC;
-            ")?;
+            ",
+        )?;
         let rows = statement.query_map(params![name], installed_harness_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -603,18 +611,21 @@ impl HarnessRegistry {
     pub fn set_default_version(&self, name: &str, version: &str) -> Result<(), CraftError> {
         validate_harness_name(name)?;
         // Verify the version exists
-        let exists = self.connection()?.query_row(
-            "SELECT 1 FROM harnesses WHERE name = ?1 AND version = ?2;",
-            params![name, version],
-            |_| Ok(true),
-        ).unwrap_or(false);
-        
+        let exists = self
+            .connection()?
+            .query_row(
+                "SELECT 1 FROM harnesses WHERE name = ?1 AND version = ?2;",
+                params![name, version],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
         if !exists {
-            return Err(CraftError::MissingHarness(
-                format!("harness `{name}` version `{version}` is not installed")
-            ));
+            return Err(CraftError::MissingHarness(format!(
+                "harness `{name}` version `{version}` is not installed"
+            )));
         }
-        
+
         self.connection()?.execute(
             "INSERT OR REPLACE INTO default_versions (name, version) VALUES (?1, ?2);",
             params![name, version],
@@ -625,34 +636,43 @@ impl HarnessRegistry {
     /// Get the default version for a harness
     pub fn get_default_version(&self, name: &str) -> Result<Option<String>, CraftError> {
         validate_harness_name(name)?;
-        let version = self.connection()?.query_row(
-            "SELECT version FROM default_versions WHERE name = ?1;",
-            params![name],
-            |row| row.get::<_, String>(0),
-        ).optional()?;
+        let version = self
+            .connection()?
+            .query_row(
+                "SELECT version FROM default_versions WHERE name = ?1;",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
         Ok(version)
     }
 
     /// Find the best matching harness version for a constraint
-    pub fn find_version(&self, name: &str, constraint: &VersionConstraint) -> Result<Option<InstalledHarness>, CraftError> {
+    pub fn find_version(
+        &self,
+        name: &str,
+        constraint: &VersionConstraint,
+    ) -> Result<Option<InstalledHarness>, CraftError> {
         validate_harness_name(name)?;
         let versions = self.list_versions(name)?;
-        
+
         // Filter by constraint and sort by version descending
         let mut matching: Vec<_> = versions
             .into_iter()
             .filter(|h| {
-                Version::parse(&h.version).map(|v| constraint.matches(&v)).unwrap_or(false)
+                Version::parse(&h.version)
+                    .map(|v| constraint.matches(&v))
+                    .unwrap_or(false)
             })
             .collect();
-        
+
         // Sort by parsed version descending
         matching.sort_by(|a, b| {
             let va = Version::parse(&a.version).unwrap_or_else(|_| Version::new(0, 0, 0));
             let vb = Version::parse(&b.version).unwrap_or_else(|_| Version::new(0, 0, 0));
             vb.cmp(&va)
         });
-        
+
         Ok(matching.into_iter().next())
     }
 
@@ -668,29 +688,35 @@ impl HarnessRegistry {
         } else {
             self.info(name)?
         };
-        
+
         // Use a single connection for all operations in this method
         let conn = self.connection()?;
-        
+
         // Check if this was the default BEFORE deleting
-        let was_default: bool = conn.query_row(
-            "SELECT 1 FROM default_versions WHERE name = ?1 AND version = ?2;",
+        let was_default: bool = conn
+            .query_row(
+                "SELECT 1 FROM default_versions WHERE name = ?1 AND version = ?2;",
+                params![name, &harness.version],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        conn.execute(
+            "DELETE FROM harnesses WHERE name = ?1 AND version = ?2;",
             params![name, &harness.version],
-            |_| Ok(true),
-        ).unwrap_or(false);
-        
-        conn.execute("DELETE FROM harnesses WHERE name = ?1 AND version = ?2;", 
-            params![name, &harness.version])?;
-        
+        )?;
+
         // Update default version if this was the default
         if was_default {
             // Find another version to set as default
-            let new_default: Option<String> = conn.query_row(
-                "SELECT version FROM harnesses WHERE name = ?1 ORDER BY version DESC LIMIT 1;",
-                params![name],
-                |row| row.get(0),
-            ).optional()?;
-            
+            let new_default: Option<String> = conn
+                .query_row(
+                    "SELECT version FROM harnesses WHERE name = ?1 ORDER BY version DESC LIMIT 1;",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
             if let Some(v) = new_default {
                 conn.execute(
                     "INSERT OR REPLACE INTO default_versions (name, version) VALUES (?1, ?2);",
@@ -703,7 +729,7 @@ impl HarnessRegistry {
                 )?;
             }
         }
-        
+
         if remove_files && harness.path.exists() {
             fs::remove_dir_all(&harness.path)?;
         }
@@ -723,11 +749,9 @@ impl HarnessRegistry {
     pub fn to_version_resolver(&self) -> Result<VersionResolver, CraftError> {
         let mut resolver = VersionResolver::new();
         let conn = self.connection()?;
-        
-        let mut stmt = conn.prepare(
-            "SELECT name, version, source, path FROM harnesses;"
-        )?;
-        
+
+        let mut stmt = conn.prepare("SELECT name, version, source, path FROM harnesses;")?;
+
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -736,14 +760,14 @@ impl HarnessRegistry {
                 row.get::<_, String>(3)?,
             ))
         })?;
-        
+
         for row in rows {
             let (name, version_str, source, path) = row?;
             if let Ok(version) = Version::parse(&version_str) {
                 resolver.add_version(name, version, source, path);
             }
         }
-        
+
         Ok(resolver)
     }
 
@@ -994,7 +1018,11 @@ fn read_harness_artifact(root: &Path, relative_path: &Path) -> Result<String, Cr
         .map_err(|err| CraftError::io(format!("failed to read {}: {err}", path.display()), err))
 }
 
-fn render_compose(artifacts: &[ComposeArtifact], warnings: &[String], strategy: ConflictStrategy) -> String {
+fn render_compose(
+    artifacts: &[ComposeArtifact],
+    warnings: &[String],
+    strategy: ConflictStrategy,
+) -> String {
     let mut output = String::new();
     output.push_str("# Generated by craft compose\n\n");
     output.push_str("[compose]\n");
@@ -1582,10 +1610,22 @@ tdd = "validators/checks.tdd"
 
     #[test]
     fn conflict_strategy_from_string_is_case_sensitive() {
-        assert_eq!(ConflictStrategy::from_string("ordered-merge"), Some(ConflictStrategy::OrderedMerge));
-        assert_eq!(ConflictStrategy::from_string("merge"), Some(ConflictStrategy::Merge));
-        assert_eq!(ConflictStrategy::from_string("override"), Some(ConflictStrategy::Override));
-        assert_eq!(ConflictStrategy::from_string("fail"), Some(ConflictStrategy::Fail));
+        assert_eq!(
+            ConflictStrategy::from_string("ordered-merge"),
+            Some(ConflictStrategy::OrderedMerge)
+        );
+        assert_eq!(
+            ConflictStrategy::from_string("merge"),
+            Some(ConflictStrategy::Merge)
+        );
+        assert_eq!(
+            ConflictStrategy::from_string("override"),
+            Some(ConflictStrategy::Override)
+        );
+        assert_eq!(
+            ConflictStrategy::from_string("fail"),
+            Some(ConflictStrategy::Fail)
+        );
         assert_eq!(ConflictStrategy::from_string("MERGE"), None);
         assert_eq!(ConflictStrategy::from_string("unknown"), None);
     }
@@ -1599,7 +1639,6 @@ tdd = "validators/checks.tdd"
     }
 
     fn temp_root(prefix: &str) -> PathBuf {
-
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_else(|err| panic!("{err}"))
@@ -1613,20 +1652,24 @@ tdd = "validators/checks.tdd"
         let registry = HarnessRegistry::open(root.join("registry.sqlite3")).unwrap();
 
         // Install first version
-        registry.upsert(&InstalledHarness {
-            name: "test-harness".to_string(),
-            version: "1.0.0".to_string(),
-            source: "github:test/repo".to_string(),
-            path: root.join("v1"),
-        }).unwrap();
+        registry
+            .upsert(&InstalledHarness {
+                name: "test-harness".to_string(),
+                version: "1.0.0".to_string(),
+                source: "github:test/repo".to_string(),
+                path: root.join("v1"),
+            })
+            .unwrap();
 
         // Install second version
-        registry.upsert(&InstalledHarness {
-            name: "test-harness".to_string(),
-            version: "1.1.0".to_string(),
-            source: "github:test/repo".to_string(),
-            path: root.join("v1.1"),
-        }).unwrap();
+        registry
+            .upsert(&InstalledHarness {
+                name: "test-harness".to_string(),
+                version: "1.1.0".to_string(),
+                source: "github:test/repo".to_string(),
+                path: root.join("v1.1"),
+            })
+            .unwrap();
 
         // Both versions should be retrievable
         let versions = registry.list_versions("test-harness").unwrap();
@@ -1637,7 +1680,9 @@ tdd = "validators/checks.tdd"
         assert_eq!(default.version, "1.0.0");
 
         // But we can set a different default
-        registry.set_default_version("test-harness", "1.1.0").unwrap();
+        registry
+            .set_default_version("test-harness", "1.1.0")
+            .unwrap();
         let new_default = registry.info("test-harness").unwrap();
         assert_eq!(new_default.version, "1.1.0");
 
@@ -1660,12 +1705,14 @@ tdd = "validators/checks.tdd"
             ("1.5.0", root.join("v1.5")),
             ("2.0.0", root.join("v2")),
         ] {
-            registry.upsert(&InstalledHarness {
-                name: "dep-harness".to_string(),
-                version: version.to_string(),
-                source: "github:owner/dep".to_string(),
-                path,
-            }).unwrap();
+            registry
+                .upsert(&InstalledHarness {
+                    name: "dep-harness".to_string(),
+                    version: version.to_string(),
+                    source: "github:owner/dep".to_string(),
+                    path,
+                })
+                .unwrap();
         }
 
         // Find matching version
@@ -1676,7 +1723,9 @@ tdd = "validators/checks.tdd"
 
         // Constraint that doesn't match 2.x
         let compatibility = VersionConstraint::parse("^1.2.0").unwrap();
-        let found_compat = registry.find_version("dep-harness", &compatibility).unwrap();
+        let found_compat = registry
+            .find_version("dep-harness", &compatibility)
+            .unwrap();
         assert!(found_compat.is_some());
         assert_eq!(found_compat.unwrap().version, "1.5.0");
 
@@ -1694,31 +1743,48 @@ tdd = "validators/checks.tdd"
         let registry = HarnessRegistry::open(root.join("registry.sqlite3")).unwrap();
 
         // Install two versions
-        registry.upsert(&InstalledHarness {
-            name: "multi-version".to_string(),
-            version: "1.0.0".to_string(),
-            source: "src1".to_string(),
-            path: root.join("v1"),
-        }).unwrap();
+        registry
+            .upsert(&InstalledHarness {
+                name: "multi-version".to_string(),
+                version: "1.0.0".to_string(),
+                source: "src1".to_string(),
+                path: root.join("v1"),
+            })
+            .unwrap();
 
-        registry.upsert(&InstalledHarness {
-            name: "multi-version".to_string(),
-            version: "2.0.0".to_string(),
-            source: "src2".to_string(),
-            path: root.join("v2"),
-        }).unwrap();
+        registry
+            .upsert(&InstalledHarness {
+                name: "multi-version".to_string(),
+                version: "2.0.0".to_string(),
+                source: "src2".to_string(),
+                path: root.join("v2"),
+            })
+            .unwrap();
 
         // Verify both versions exist
         let all_versions = registry.list_versions("multi-version").unwrap();
-        assert_eq!(all_versions.len(), 2, "Expected 2 versions but found {}", all_versions.len());
+        assert_eq!(
+            all_versions.len(),
+            2,
+            "Expected 2 versions but found {}",
+            all_versions.len()
+        );
 
         // Set v2 as default
-        registry.set_default_version("multi-version", "2.0.0").unwrap();
+        registry
+            .set_default_version("multi-version", "2.0.0")
+            .unwrap();
         let current_default = registry.get_default_version("multi-version").unwrap();
-        assert_eq!(current_default, Some("2.0.0".to_string()), "Default should be 2.0.0");
+        assert_eq!(
+            current_default,
+            Some("2.0.0".to_string()),
+            "Default should be 2.0.0"
+        );
 
         // Uninstall v2
-        registry.uninstall_version("multi-version", Some("2.0.0"), false).unwrap();
+        registry
+            .uninstall_version("multi-version", Some("2.0.0"), false)
+            .unwrap();
 
         // Default should fall back to v1
         let remaining = registry.list_versions("multi-version").unwrap();
@@ -1726,7 +1792,11 @@ tdd = "validators/checks.tdd"
         assert_eq!(remaining[0].version, "1.0.0");
 
         let new_default = registry.get_default_version("multi-version").unwrap();
-        assert_eq!(new_default, Some("1.0.0".to_string()), "Default should be 1.0.0 after uninstalling 2.0.0");
+        assert_eq!(
+            new_default,
+            Some("1.0.0".to_string()),
+            "Default should be 1.0.0 after uninstalling 2.0.0"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
