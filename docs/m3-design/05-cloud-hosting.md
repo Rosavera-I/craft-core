@@ -640,3 +640,483 @@ craft-harness-1.0.0.tar.gz
 │   ├── http.toml
 │   └── fs.toml
 └── checksums.txt           # SHA-256 checksums
+```
+
+## API Endpoints
+
+### Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/auth/device` | Initiate device login flow |
+| POST | `/auth/device/poll` | Poll for device authorization |
+| POST | `/auth/refresh` | Refresh access token |
+| POST | `/auth/revoke` | Revoke token |
+
+### Organizations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/orgs` | List user's organizations |
+| POST | `/orgs` | Create organization |
+| GET | `/orgs/{name}` | Get organization details |
+| PATCH | `/orgs/{name}` | Update organization |
+| DELETE | `/orgs/{name}` | Delete organization |
+| GET | `/orgs/{name}/members` | List members |
+| POST | `/orgs/{name}/members` | Add member |
+| DELETE | `/orgs/{name}/members/{user_id}` | Remove member |
+
+### Teams
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/orgs/{org}/teams` | List teams |
+| POST | `/orgs/{org}/teams` | Create team |
+| GET | `/orgs/{org}/teams/{name}` | Get team |
+| PATCH | `/orgs/{org}/teams/{name}` | Update team |
+| DELETE | `/orgs/{org}/teams/{name}` | Delete team |
+| GET | `/orgs/{org}/teams/{name}/members` | List team members |
+| POST | `/orgs/{org}/teams/{name}/members` | Add to team |
+
+### Harnesses
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/harnesses` | Search harnesss |
+| POST | `/harnesses` | Create harness |
+| GET | `/harnesses/{org}/{name}` | Get harness details |
+| PATCH | `/harnesses/{org}/{name}` | Update harness |
+| DELETE | `/harnesses/{org}/{name}` | Delete harness |
+| GET | `/harnesses/{org}/{name}/versions` | List versions |
+| GET | `/harnesses/{org}/{name}/versions/{version}` | Get specific version |
+| POST | `/harnesses/{org}/{name}/versions` | Publish new version |
+| POST | `/harnesses/{org}/{name}/versions/{version}/yank` | Yank version |
+| POST | `/harnesses/{org}/{name}/versions/{version}/unyank` | Unyank version |
+| GET | `/harnesses/{org}/{name}/download/{version}` | Download harness archive |
+
+### API Tokens
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/orgs/{org}/tokens` | List API tokens |
+| POST | `/orgs/{org}/tokens` | Create token (returns plaintext once) |
+| DELETE | `/orgs/{org}/tokens/{id}` | Revoke token |
+
+## CLI Integration
+
+### Authentication Commands
+
+```bash
+# Login to registry (device flow)
+craft registry login
+# -> Opens browser, stores JWT in keyring
+
+# Logout from registry
+craft registry logout
+
+# Switch between registries
+craft registry set-default https://craft.mycompany.com
+```
+
+### Organization Management
+
+```bash
+# List organizations
+craft org list
+# Output:
+# mycompany      Owner    Enterprise  12 members
+# personal       Owner    Free        1 member
+
+# Create organization
+craft org create mycompany --display-name "My Company Inc."
+
+# Invite member
+craft org invite mycompany --email alice@example.com --role admin
+```
+
+### Team Management
+
+```bash
+# List teams in org
+craft team list mycompany
+
+# Create team
+craft team create mycompany/security --display-name "Security Team"
+
+# Add member to team
+craft team add-member mycompany/security alice
+
+# Set team visibility on harness
+craft harness set-team mycompany/harness-a security
+```
+
+### Publishing Commands
+
+```bash
+# Publish current harness
+craft publish
+# Publishes to configured registry using org/name from harness.toml
+
+# Publish with specific version
+craft publish --version 1.0.0 --changelog "Release notes here"
+
+# Dry-run publish (validate only)
+craft publish --dry-run
+```
+
+### API Token Management
+
+```bash
+# List tokens
+craft token list mycompany
+
+# Create token (for CI/CD)
+craft token create mycompany --name "GitHub Actions" --scopes "read:harnesses,write:harnesses"
+# Output: tok_xxxxxxxxxxxxxxxx (save this - won't be shown again)
+
+# Revoke token
+craft token revoke mycompany tok_xxx
+```
+
+## Client Library (`craft-registry`)
+
+### Usage Example
+
+```rust
+use craft_registry::{RegistryClient, RegistryConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Configure client
+    let config = RegistryConfig {
+        base_url: "https://craft.mycompany.com".to_string(),
+        auth_token: Some(load_token_from_keyring()?),
+    };
+    
+    let client = RegistryClient::new(config)?;
+    
+    // Search for harnesses
+    let results = client.search_harnesses("code review").await?;
+    for harness in results {
+        println!("{} - {}", harness.qualified_name, harness.description);
+    }
+    
+    // Download and install harness
+    let version = client.get_version("mycompany/rust-analyzer", "1.0.0").await?;
+    let archive = client.download_harness(&version).await?;
+    
+    // Install to local registry
+    install_harness(archive)?;
+    
+    Ok(())
+}
+```
+
+### RegistryClient Implementation
+
+```rust
+// craft-registry/src/client.rs
+
+pub struct RegistryClient {
+    http: reqwest::Client,
+    base_url: Url,
+    auth_token: Option<String>,
+}
+
+impl RegistryClient {
+    pub fn new(config: RegistryConfig) -> Result<Self, RegistryError> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
+            
+        Ok(Self {
+            http,
+            base_url: Url::parse(&config.base_url)?,
+            auth_token: config.auth_token,
+        })
+    }
+    
+    pub async fn search_harnesses(
+        &self,
+        query: &str,
+    ) -> Result<Vec<Harness>, RegistryError> {
+        let url = self.base_url.join("/harnesses")?;
+        
+        let mut request = self.http.get(url).query(&[("q", query)]);
+        if let Some(token) = &self.auth_token {
+            request = request.bearer_auth(token);
+        }
+        
+        let response = request.send().await?;
+        
+        match response.status() {
+            StatusCode::OK => {
+                let harnesses: Vec<Harness> = response.json().await?;
+                Ok(harnesses)
+            }
+            StatusCode::UNAUTHORIZED => Err(RegistryError::Unauthorized),
+            StatusCode::FORBIDDEN => Err(RegistryError::Forbidden),
+            _ => Err(RegistryError::ApiError(response.text().await?)),
+        }
+    }
+    
+    pub async fn get_version(
+        &self,
+        qualified_name: &str,
+        version: &str,
+    ) -> Result<HarnessVersion, RegistryError> {
+        let path = format!("/harnesses/{}/versions/{}", qualified_name, version);
+        let url = self.base_url.join(&path)?;
+        
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(self.auth_token.as_ref().ok_or(RegistryError::NotAuthenticated)?)
+            .send()
+            .await?;
+            
+        match response.status() {
+            StatusCode::OK => Ok(response.json().await?),
+            StatusCode::NOT_FOUND => Err(RegistryError::VersionNotFound {
+                harness: qualified_name.to_string(),
+                version: version.to_string(),
+            }),
+            _ => Err(RegistryError::ApiError(response.text().await?)),
+        }
+    }
+    
+    pub async fn download_harness(
+        &self,
+        version: &HarnessVersion,
+    ) -> Result<Vec<u8>, RegistryError> {
+        let response = self.http.get(&version.download_url).send().await?;
+        
+        if response.status() != StatusCode::OK {
+            return Err(RegistryError::DownloadError(response.status()));
+        }
+        
+        let bytes = response.bytes().await?;
+        
+        // Verify checksum
+        let checksum = sha256::digest(&bytes);
+        if checksum != version.checksum {
+            return Err(RegistryError::ChecksumMismatch);
+        }
+        
+        Ok(bytes.to_vec())
+    }
+    
+    pub async fn publish(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        archive: Vec<u8>,
+    ) -> Result<HarnessVersion, RegistryError> {
+        let path = format!("/harnesses/{}/{}/versions", org, name);
+        let url = self.base_url.join(&path)?;
+        
+        let checksum = sha256::digest(&archive);
+        
+        // Create multipart form
+        let form = reqwest::multipart::Form::new()
+            .text("version", version.to_string())
+            .text("checksum", checksum)
+            .part(
+                "archive",
+                reqwest::multipart::Part::bytes(archive)
+                    .file_name(format!("{}-{}.tar.gz", name, version))
+                    .mime_str("application/gzip")?,
+            );
+        
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(self.auth_token.as_ref().ok_or(RegistryError::NotAuthenticated)?)
+            .multipart(form)
+            .send()
+            .await?;
+            
+        match response.status() {
+            StatusCode::CREATED => Ok(response.json().await?),
+            StatusCode::CONFLICT => Err(RegistryError::VersionAlreadyExists),
+            StatusCode::FORBIDDEN => Err(RegistryError::PublishDenied),
+            _ => Err(RegistryError::ApiError(response.text().await?)),
+        }
+    }
+}
+```
+
+## Configuration
+
+### Registry Server Configuration
+
+```toml
+# /etc/craft-registry/config.toml
+
+[server]
+bind_addr = "0.0.0.0:8080"
+public_url = "https://craft.mycompany.com"
+
+[database]
+url = "postgresql://craft:secret@localhost/craft_registry"
+max_connections = 50
+
+[storage]
+# Git storage
+[storage.git]
+path = "/var/lib/craft-registry/git"
+
+# Object storage (S3-compatible)
+[storage.objects]
+provider = "s3" # or "minio", "gcs"
+bucket = "craft-registry"
+region = "us-east-1"
+access_key_id = "env:AWS_ACCESS_KEY_ID"
+secret_access_key = "env:AWS_SECRET_ACCESS_KEY"
+
+[auth]
+# JWT configuration
+jwt_secret = "env:CRAFT_JWT_SECRET"
+jwt_expiry_hours = 24
+refresh_token_expiry_days = 30
+
+# OAuth providers
+[[auth.providers]]
+name = "github"
+client_id = "env:GITHUB_CLIENT_ID"
+client_secret = "env:GITHUB_CLIENT_SECRET"
+authorize_url = "https://github.com/login/oauth/authorize"
+token_url = "https://github.com/login/oauth/access_token"
+
+[[auth.providers]]
+name = "google"
+client_id = "env:GOOGLE_CLIENT_ID"
+client_secret = "env:GOOGLE_CLIENT_SECRET"
+discovery_url = "https://accounts.google.com/.well-known/openid-configuration"
+
+[limits]
+max_package_size_mb = 100
+max_versions_per_harness = 1000
+max_orgs_per_user = 10
+max_teams_per_org = 100
+```
+
+### Client Configuration
+
+```toml
+# ~/.craft/registry.toml
+
+[defaults]
+# Default registry for publishing and searching
+registry = "https://craft.mycompany.com"
+
+[[registries]]
+name = "central"
+url = "https://craft.dev"
+
+[[registries]]
+name = "company"
+url = "https://craft.mycompany.com"
+default = true
+
+# Per-registry tokens stored in keyring, not config
+```
+
+## Deployment Patterns
+
+### Self-Hosted Single Node
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  registry:
+    image: craft-registry:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql://craft:secret@postgres/craft
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      - git-storage:/var/lib/craft-registry/git
+    depends_on:
+      - postgres
+      - minio
+      
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=craft
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=craft
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+    volumes:
+      - minio-data:/data
+
+volumes:
+  git-storage:
+  postgres-data:
+  minio-data:
+```
+
+### High-Availability Deployment
+
+```mermaid
+flowchart TB
+    subgraph LB["Load Balancer"]
+        NGINX[NGINX / Caddy]
+    end
+    
+    subgraph RegistryNodes["Registry Cluster"]
+        N1[Registry Node 1]
+        N2[Registry Node 2]
+        N3[Registry Node 3]
+    end
+    
+    subgraph Storage["Shared Storage"]
+        PG[(PostgreSQL HA)]
+        REDIS[(Redis Session)]
+        S3[(S3 Compatible)]
+        GIT[Git NFS/EFS]
+    end
+    
+    NGINX --> N1
+    NGINX --> N2
+    NGINX --> N3
+    
+    N1 --> Storage
+    N2 --> Storage
+    N3 --> Storage
+```
+
+## External Dependencies
+
+| Crate | Purpose | Version |
+|-------|---------|---------|
+| axum | HTTP server framework | ^0.7 |
+| sqlx | Async PostgreSQL driver | ^0.7 |
+| reqwest | HTTP client | ^0.12 |
+| jsonwebtoken | JWT handling | ^9.0 |
+| oauth2 | OAuth 2.0 client | ^4.0 |
+| aws-sdk-s3 | S3 SDK (optional) | ^1.0 |
+| gix | Git operations | ^0.68 |
+| ulid | Sortable IDs | ^1.0 |
+
+## Open Questions
+
+1. **Package Signing**: Should harnesses be signed with Sigstore/cosign for supply chain security?
+2. **Registry Federation**: How to handle cross-registry dependencies and namespacing?
+3. **Private Registry Discovery**: Should registries advertise themselves via DNS SRV records?
+4. **Webhook Support**: Should publish events trigger webhooks for CI/CD integration?
+5. **Mirror Support**: Should registries support mirroring/public package caching?
+6. **Package Size Limits**: What are reasonable defaults for package size and storage quotas?

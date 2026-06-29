@@ -8,7 +8,7 @@ CRAFT is a Rust-native foundation for local-model expertise harnesses: reusable 
 
 This repository currently provides:
 
-- A Rust workspace with `craft-cli`, `craft-core`, `craft-lsp`, `craft-manifest`, and `craft-memory`.
+- A Rust workspace with `craft-cli`, `craft-core`, `craft-lsp`, `craft-manifest`, `craft-memory`, `craft-web`, `craft-bridge`, and `craft-registry`.
 - A `craft` CLI with `init`, `doctor`, `version`, harness registry commands, composition, and help output.
 - A `craft.toml` manifest parser and validator.
 - GitHub harness installation into `~/.craft/harnesses`.
@@ -17,6 +17,10 @@ This repository currently provides:
 - `craft validate` and `craft harness test <name>` for manifest checks plus `tdd-dsl` validator execution.
 - A minimal `craft lsp` stdio language server for `craft.toml` diagnostics and manifest completions.
 - A persistent scoped memory store backed by `~/.craft/memory.sqlite3` plus JSONL event logs.
+- Optional encrypted distributed-memory primitives in `craft-memory` behind the `crypto` feature.
+- A local `craft-web` dashboard API for harness browsing, visual composition flows, memory inspection, runtime status, and validation websockets.
+- A `craft-bridge` crate for A2A agent discovery/task routes and MCP JSON-RPC/tool/resource/prompt surfaces.
+- A draft `craft-registry` cloud harness registry with PostgreSQL schema, Axum handlers, JWT/access-token auth, package storage, and CLI scaffolding.
 - Installable starter cartridges published as separate `JMoak/craft-*` repositories.
 - CI for format, clippy, and tests.
 
@@ -28,6 +32,7 @@ cargo run -p craft-cli -- doctor
 cargo run -p craft-cli -- harness list
 cargo run -p craft-cli -- run craft.compose.toml --model llama3.1:8b
 cargo run -p craft-cli -- lsp
+cargo run -p craft-web
 cargo test
 ```
 
@@ -136,11 +141,12 @@ Starter harness cartridges live in their own repositories so they can be install
 - [`craft-tdd-architect`](https://github.com/Rosavera-I/craft-tdd-architect) for turning feature intent into executable behavior contracts.
 - [`craft-rust-maintainer`](https://github.com/Rosavera-I/craft-rust-maintainer) for Rust review, maintenance, and release hygiene.
 
-Each cartridge repo includes a `craft.toml`, system prompt, memory schema, MCP tool placeholder, and TDD validator file so it can be installed and composed like any other harness.
+Each cartridge repo includes a `craft.toml`, system prompt, memory schema, MCP tool config template, and TDD validator file so it can be installed and composed like any other harness.
 
 See `docs/HARNESS-LIFECYCLE.md` for the public harness lifecycle, artifact contract, and release checklist.
 See `docs/CARTRIDGE-STARTERS.md` for the five-cartridge dogfood plan and split-out order.
 See `docs/STACK-DOGFOOD.md` for the current cross-cartridge improvement loop and release-readiness flow.
+See `docs/M3-IMPLEMENTATION.md` for the web dashboard, distributed memory, A2A/MCP bridge, and cloud registry implementation notes.
 
 ## Memory Store
 

@@ -14,6 +14,9 @@ flowchart LR
     CLI --> Core[🔧 craft-core]
     CLI --> LSP[📝 craft-lsp]
     CLI --> Memory[🧠 craft-memory]
+    CLI --> Web[🌐 craft-web]
+    CLI --> Bridge[🔌 craft-bridge]
+    CLI --> Cloud[☁️ craft-registry]
     Core --> Manifest[📋 craft-manifest]
     Core --> Registry[(🗄️ registry.sqlite3)]
     Core --> Harnesses[📁 ~/.craft/harnesses]
@@ -24,6 +27,12 @@ flowchart LR
     Compose --> Runtime[🤖 Local Runtime<br/>ollama-compatible]
     Memory --> MemoryDb[(🗃️ memory.sqlite3)]
     Memory --> Logs[📜 JSONL event logs]
+    Memory --> Sync[🔐 encrypted sync<br/>CRDT + Merkle]
+    Web --> Dashboard[🖥️ Dashboard API<br/>compose + memory]
+    Bridge --> A2A[🤝 A2A]
+    Bridge --> MCP[🔧 MCP]
+    Cloud --> Pg[(PostgreSQL)]
+    Cloud --> Packages[📦 package storage]
     LSP --> Editor[💻 Editor<br/>diagnostics + completions]
 ```
 
@@ -61,6 +70,9 @@ craft run craft.compose.toml --model llama3.1:8b --prompt "Review error handling
 | `craft-manifest` | `craft.toml` parsing, semver validation | `load_manifest`, `Manifest` |
 | `craft-lsp` | LSP stdio adapter for editor integration | `run_lsp_server` |
 | `craft-memory` | SQLite facts, FTS search, JSONL events | `Memory::record`, `Memory::recall` |
+| `craft-web` | Local dashboard API and validation websocket | `create_app`, `run_server` |
+| `craft-bridge` | A2A and MCP interoperability | `A2AServer`, `A2AClient`, `McpServer` |
+| `craft-registry` | Cloud harness registry server and CLI | `Server`, `RegistryClient` |
 
 ---
 
