@@ -262,6 +262,30 @@ pub async fn create_user(
     Ok(user)
 }
 
+/// Count users for first-run bootstrap checks.
+pub async fn count_users(pool: &PgPool) -> RegistryResult<i64> {
+    let count = sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM users"#)
+        .fetch_one(pool)
+        .await?;
+
+    Ok(count)
+}
+
+/// Create the first local admin user.
+pub async fn create_bootstrap_admin_user(pool: &PgPool) -> RegistryResult<User> {
+    let user = sqlx::query_as::<_, User>(
+        r#"
+        INSERT INTO users (username, email, display_name, password_hash, is_admin)
+        VALUES ('admin', 'admin@local.craft', 'CRAFT Admin', NULL, TRUE)
+        RETURNING *
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(user)
+}
+
 /// Get user by ID
 pub async fn get_user_by_id(pool: &PgPool, id: Uuid) -> RegistryResult<User> {
     let user = sqlx::query_as::<_, User>(r#"SELECT * FROM users WHERE id = $1"#)

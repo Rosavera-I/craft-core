@@ -55,7 +55,17 @@ pub struct RegistryConfig {
     /// GitHub OAuth app client secret.
     pub github_oauth_client_secret: Option<String>,
     /// Optional explicit GitHub OAuth redirect URI.
+    #[serde(default)]
     pub github_oauth_redirect_uri: Option<String>,
+    /// Enable GitHub OAuth device login routes.
+    #[serde(default)]
+    pub enable_github_oauth: bool,
+    /// Enable simple API-key authentication.
+    #[serde(default = "default_simple_auth_enabled")]
+    pub simple_auth_enabled: bool,
+    /// Optional first-run admin API key. Generated and logged once when omitted.
+    #[serde(default)]
+    pub bootstrap_admin_api_key: Option<String>,
 }
 
 impl Default for RegistryConfig {
@@ -75,8 +85,15 @@ impl Default for RegistryConfig {
             github_oauth_client_id: None,
             github_oauth_client_secret: None,
             github_oauth_redirect_uri: None,
+            enable_github_oauth: false,
+            simple_auth_enabled: true,
+            bootstrap_admin_api_key: None,
         }
     }
+}
+
+fn default_simple_auth_enabled() -> bool {
+    true
 }
 
 /// Storage backend configuration

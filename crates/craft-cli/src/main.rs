@@ -64,11 +64,21 @@ impl CliError {
     fn suggestion(&self) -> Option<String> {
         match self {
             CliError::Usage(message) => {
-                let command = message.strip_prefix("unknown command `")?.split('`').next()?;
-                suggest_command(command).map(|suggestion| format!("did you mean `craft {suggestion}`?"))
+                let command = message
+                    .strip_prefix("unknown command `")?
+                    .split('`')
+                    .next()?;
+                suggest_command(command)
+                    .map(|suggestion| format!("did you mean `craft {suggestion}`?"))
             }
-            CliError::Core(error) => Some(format!("run `craft doctor` if the local environment may be missing dependencies; details: {}", error.code())),
-            CliError::Memory(error) => Some(format!("check the memory command arguments and scope; details: {}", error.code())),
+            CliError::Core(error) => Some(format!(
+                "run `craft doctor` if the local environment may be missing dependencies; details: {}",
+                error.code()
+            )),
+            CliError::Memory(error) => Some(format!(
+                "check the memory command arguments and scope; details: {}",
+                error.code()
+            )),
             CliError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound => {
                 Some("check that the path or runtime exists and try again".to_string())
             }
@@ -150,6 +160,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
         Some("run") => run_compose_command(&args[1..]),
         Some("lsp") => lsp_command(),
         Some("validate") => validate_command(&args[1..]),
+        Some("login") => login_command(&args[1..]),
         Some("memory") => memory_command(&args[1..]),
         Some("completions") => completions_command(&args[1..]),
         Some(command) => Err(CliError::usage(format!(
@@ -176,6 +187,7 @@ Usage:
   craft run [craft.compose.toml] --model <model> [--runtime ollama] [--prompt <text>]
   craft lsp             Start the craft.toml language server on stdio
   craft validate [path]   Validate a harness manifest and TDD checks
+  craft login --api-key <key> [--registry <url>]
   craft memory log <scope> <key> <value>
   craft memory recall <scope> <key>
   craft memory record --scope <scope> --key <key> --value <value>
@@ -201,7 +213,9 @@ fn completions_command(args: &[String]) -> Result<(), CliError> {
         "bash" => generate(shells::Bash, &mut command, "craft", &mut io::stdout()),
         "zsh" => generate(shells::Zsh, &mut command, "craft", &mut io::stdout()),
         "fish" => generate(shells::Fish, &mut command, "craft", &mut io::stdout()),
-        "powershell" | "ps1" => generate(shells::PowerShell, &mut command, "craft", &mut io::stdout()),
+        "powershell" | "ps1" => {
+            generate(shells::PowerShell, &mut command, "craft", &mut io::stdout())
+        }
         "elvish" => generate(shells::Elvish, &mut command, "craft", &mut io::stdout()),
         value => {
             return Err(CliError::usage(format!(
@@ -227,15 +241,29 @@ fn completion_command() -> Command {
                 .subcommand(
                     Command::new("uninstall")
                         .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("yes").short('y').long("yes").action(ArgAction::SetTrue)),
+                        .arg(
+                            Arg::new("yes")
+                                .short('y')
+                                .long("yes")
+                                .action(ArgAction::SetTrue),
+                        ),
                 ),
         )
         .subcommand(
             Command::new("compose")
                 .arg(Arg::new("harness").num_args(1..))
-                .arg(Arg::new("output").short('o').long("output").value_name("PATH"))
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_name("PATH"),
+                )
                 .arg(Arg::new("plan").long("plan").action(ArgAction::SetTrue))
-                .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("dry-run")
+                        .long("dry-run")
+                        .action(ArgAction::SetTrue),
+                )
                 .arg(Arg::new("strategy").long("strategy").value_name("STRATEGY")),
         )
         .subcommand(
@@ -246,12 +274,27 @@ fn completion_command() -> Command {
         .subcommand(
             Command::new("run")
                 .arg(Arg::new("compose"))
-                .arg(Arg::new("model").long("model").required(true).value_name("MODEL"))
+                .arg(
+                    Arg::new("model")
+                        .long("model")
+                        .required(true)
+                        .value_name("MODEL"),
+                )
                 .arg(Arg::new("runtime").long("runtime").value_name("RUNTIME"))
                 .arg(Arg::new("prompt").long("prompt").value_name("TEXT")),
         )
         .subcommand(Command::new("lsp"))
         .subcommand(Command::new("validate").arg(Arg::new("path")))
+        .subcommand(
+            Command::new("login")
+                .arg(
+                    Arg::new("api-key")
+                        .long("api-key")
+                        .required(true)
+                        .value_name("KEY"),
+                )
+                .arg(Arg::new("registry").long("registry").value_name("URL")),
+        )
         .subcommand(
             Command::new("memory")
                 .subcommand(
@@ -266,7 +309,9 @@ fn completion_command() -> Command {
                         .arg(Arg::new("key").long("key").required(true))
                         .arg(Arg::new("value").long("value").required(true)),
                 )
-                .subcommand(Command::new("inspect").arg(Arg::new("scope").long("scope").required(true)))
+                .subcommand(
+                    Command::new("inspect").arg(Arg::new("scope").long("scope").required(true)),
+                )
                 .subcommand(
                     Command::new("recall")
                         .arg(Arg::new("scope").long("scope"))
@@ -286,6 +331,75 @@ fn completion_command() -> Command {
                 ),
         )
         .subcommand(Command::new("completions").arg(Arg::new("shell").required(true)))
+}
+
+fn login_command(args: &[String]) -> Result<(), CliError> {
+    let mut api_key = None;
+    let mut registry = "http://localhost:8080".to_string();
+    let mut iter = args.iter();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--api-key" => {
+                api_key = iter.next().cloned();
+            }
+            "--registry" => {
+                registry = iter.next().cloned().ok_or_else(|| {
+                    CliError::usage("usage: craft login --api-key <key> [--registry <url>]")
+                })?;
+            }
+            "-h" | "--help" => {
+                println!("usage: craft login --api-key <key> [--registry <url>]");
+                return Ok(());
+            }
+            value => {
+                return Err(CliError::usage(format!(
+                    "unknown login argument `{value}`\n\nRun `craft login --help`."
+                )));
+            }
+        }
+    }
+
+    let api_key = api_key
+        .ok_or_else(|| CliError::usage("usage: craft login --api-key <key> [--registry <url>]"))?;
+    let config_path = default_registry_config_path();
+    save_registry_credentials(&config_path, &registry, &api_key)?;
+
+    println!("Registry credentials saved to {}", config_path.display());
+    Ok(())
+}
+
+fn default_registry_config_path() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("craft")
+        .join("registry.toml")
+}
+
+fn save_registry_credentials(
+    path: &Path,
+    registry_url: &str,
+    api_key: &str,
+) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| CliError::io(format!("failed to create {}", parent.display()), err))?;
+    }
+
+    let content = format!(
+        "registry_url = \"{}\"\nauth_token = \"{}\"\n",
+        toml_escape(registry_url),
+        toml_escape(api_key)
+    );
+    fs::write(path, content)
+        .map_err(|err| CliError::io(format!("failed to write {}", path.display()), err))?;
+    Ok(())
+}
+
+fn toml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn suggest_command(command: &str) -> Option<&'static str> {
@@ -407,7 +521,10 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
                 CliError::usage("usage: craft harness install github:owner/repo[@ref]")
             })?;
             let source = GithubSource::parse(source)?;
-            let spinner = ui::spinner(format!("installing harness from github:{}/{}", source.owner, source.repo));
+            let spinner = ui::spinner(format!(
+                "installing harness from github:{}/{}",
+                source.owner, source.repo
+            ));
             let result = manager.install_github(&source)?;
             ui::finish_spinner(spinner, format!("installed {}", result.harness.name));
             println!(

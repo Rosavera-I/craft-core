@@ -11,15 +11,27 @@ pub fn error_label(code: Option<&str>) -> String {
 }
 
 pub fn warning(message: impl AsRef<str>) {
-    eprintln!("{}: {}", paint_stderr("warning".to_string(), "33"), message.as_ref());
+    eprintln!(
+        "{}: {}",
+        paint_stderr("warning".to_string(), "33"),
+        message.as_ref()
+    );
 }
 
 pub fn success(message: impl AsRef<str>) {
-    println!("{} {}", paint_stdout("ok".to_string(), "32"), message.as_ref());
+    println!(
+        "{} {}",
+        paint_stdout("ok".to_string(), "32"),
+        message.as_ref()
+    );
 }
 
 pub fn status(message: impl AsRef<str>) {
-    println!("{} {}", paint_stdout("==>".to_string(), "36"), message.as_ref());
+    println!(
+        "{} {}",
+        paint_stdout("==>".to_string(), "36"),
+        message.as_ref()
+    );
 }
 
 pub fn spinner(message: impl Into<String>) -> ProgressBar {

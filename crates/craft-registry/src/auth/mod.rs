@@ -19,18 +19,17 @@ use std::sync::Arc;
 
 use crate::{
     RegistryConfig,
-    db::{
-        Database, User, get_access_token_by_hash, list_user_org_slugs, list_user_team_slugs,
-        update_token_last_used,
-    },
+    db::{Database, User, list_user_org_slugs, list_user_team_slugs},
     error::{RegistryError, RegistryResult},
 };
 
 pub mod client;
 mod password;
+pub mod simple;
 
 pub use client::{LoginRequest, LoginResponse, RegistryClient};
 pub use password::{hash_password, verify_password};
+pub use simple::{ApiKeyAuthenticator, BootstrapApiKey};
 
 /// JWT claims
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,14 +316,7 @@ impl AuthService {
         let token_hash = hash_token(&token);
         let token_prefix = token[..12].to_string();
 
-        let scope_strings: Vec<String> = scopes
-            .iter()
-            .map(|s| match s {
-                TokenScope::Read => "read".to_string(),
-                TokenScope::Write => "write".to_string(),
-                TokenScope::Admin => "admin".to_string(),
-            })
-            .collect();
+        let scope_strings: Vec<String> = scopes.iter().map(ToString::to_string).collect();
 
         let db_token = crate::db::create_access_token(
             self.db.pool(),
@@ -343,29 +335,9 @@ impl AuthService {
 
     /// Verify an access token
     pub async fn verify_access_token(&self, token: &str) -> RegistryResult<AccessToken> {
-        // Hash the token
-        let token_hash = hash_token(token);
-
-        // Look up in database
-        let db_token = get_access_token_by_hash(self.db.pool(), &token_hash).await?;
-
-        // Update last used
-        update_token_last_used(self.db.pool(), db_token.id).await?;
-
-        // Parse scopes
-        let scopes: Vec<TokenScope> = db_token
-            .scopes
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        Ok(AccessToken {
-            id: db_token.id,
-            user_id: db_token.user_id,
-            org_id: db_token.org_id,
-            name: db_token.name,
-            scopes,
-        })
+        ApiKeyAuthenticator::new(self.db.clone())
+            .verify_api_key(token)
+            .await
     }
 }
 

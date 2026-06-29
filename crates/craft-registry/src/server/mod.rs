@@ -57,6 +57,20 @@ impl Server {
             db,
         });
 
+        if config.simple_auth_enabled {
+            if let Some(bootstrap) =
+                crate::auth::ApiKeyAuthenticator::new(state.db.clone())
+                    .bootstrap_admin(&config)
+                    .await?
+            {
+                tracing::warn!(
+                    username = %bootstrap.username,
+                    api_key = %bootstrap.api_key,
+                    "Created first-run CRAFT registry admin API key; store it now because it will not be shown again"
+                );
+            }
+        }
+
         // Create auth state
         let auth_state = Arc::new(AuthState {
             auth_service: crate::auth::AuthService::new(&config, state.db.clone())?,
@@ -87,15 +101,21 @@ impl Server {
             .route("/api/v1/status", get(status))
             .route("/api/v1/auth/login", post(login))
             .route("/api/v1/auth/register", post(register))
-            .route("/auth/device", post(initiate_device_auth))
-            .route("/auth/device/poll", post(poll_device_auth))
-            .route("/auth/github/callback", get(github_callback))
-            .route("/api/v1/auth/device", post(initiate_device_auth))
-            .route("/api/v1/auth/device/poll", post(poll_device_auth))
-            .route("/api/v1/auth/github/callback", get(github_callback))
             .route("/api/v1/orgs", get(list_public_orgs))
             .route("/api/v1/orgs/:name", get(get_org_public))
             .route("/api/v1/harnesses/search", get(search_harnesses));
+
+        let public_routes = if config.enable_github_oauth {
+            public_routes
+                .route("/auth/device", post(initiate_device_auth))
+                .route("/auth/device/poll", post(poll_device_auth))
+                .route("/auth/github/callback", get(github_callback))
+                .route("/api/v1/auth/device", post(initiate_device_auth))
+                .route("/api/v1/auth/device/poll", post(poll_device_auth))
+                .route("/api/v1/auth/github/callback", get(github_callback))
+        } else {
+            public_routes
+        };
 
         // Routes requiring authentication
         let protected = Router::new()
