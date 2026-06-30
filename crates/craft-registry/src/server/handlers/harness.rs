@@ -1,21 +1,23 @@
 //! Harness and version request handlers
 
 use axum::{
-    body::Body,
     extract::{Multipart, Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::sync::Arc;
+use tar::Archive;
 
 use crate::{
     auth::AuthUser,
     db::*,
     error::{RegistryError, RegistryResult},
     server::AppState,
-    storage::create_storage,
+    storage::{compute_sha256, create_storage},
     Visibility,
 };
 
@@ -210,6 +212,16 @@ pub struct VersionResponse {
     pub published_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PublishMetadata {
+    version: Option<String>,
+    git_ref: Option<String>,
+    git_commit_sha: Option<String>,
+    description: Option<String>,
+    readme_content: Option<String>,
+    content_sha256: Option<String>,
+}
+
 impl From<HarnessVersion> for VersionResponse {
     fn from(v: HarnessVersion) -> Self {
         Self {
@@ -313,9 +325,13 @@ pub async fn publish_version_handler(
     }
 
     // Process multipart form
+    let mut metadata: Option<PublishMetadata> = None;
     let mut version_str = None;
     let mut git_ref = None;
+    let mut git_commit_sha = None;
     let mut description = None;
+    let mut readme_content = None;
+    let mut expected_sha256 = None;
     let mut package_data: Option<Vec<u8>> = None;
 
     while let Some(field) = multipart.next_field().await? {
@@ -323,12 +339,35 @@ pub async fn publish_version_handler(
         let data = field.bytes().await?;
 
         match name.as_str() {
-            "version" => version_str = Some(String::from_utf8_lossy(&data).to_string()),
-            "git_ref" => git_ref = Some(String::from_utf8_lossy(&data).to_string()),
-            "description" => description = Some(String::from_utf8_lossy(&data).to_string()),
+            "metadata" => {
+                metadata = Some(serde_json::from_slice::<PublishMetadata>(&data)?);
+            }
+            "version" => version_str = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "git_ref" => git_ref = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "git_commit_sha" => {
+                git_commit_sha = Some(String::from_utf8_lossy(&data).trim().to_string())
+            }
+            "description" => {
+                description = Some(String::from_utf8_lossy(&data).trim().to_string())
+            }
+            "readme_content" => {
+                readme_content = Some(String::from_utf8_lossy(&data).trim().to_string())
+            }
+            "content_sha256" | "sha256" => {
+                expected_sha256 = Some(String::from_utf8_lossy(&data).trim().to_string())
+            }
             "package" => package_data = Some(data.to_vec()),
             _ => {}
         }
+    }
+
+    if let Some(metadata) = metadata {
+        version_str = version_str.or(metadata.version);
+        git_ref = git_ref.or(metadata.git_ref);
+        git_commit_sha = git_commit_sha.or(metadata.git_commit_sha);
+        description = description.or(metadata.description);
+        readme_content = readme_content.or(metadata.readme_content);
+        expected_sha256 = expected_sha256.or(metadata.content_sha256);
     }
 
     let version_str = version_str.ok_or_else(|| {
@@ -341,7 +380,15 @@ pub async fn publish_version_handler(
     })?;
 
     // Compute hash
-    let content_sha256 = crate::storage::compute_sha256(&package_data);
+    let content_sha256 = compute_sha256(&package_data);
+    if let Some(expected_sha256) = expected_sha256 {
+        if expected_sha256 != content_sha256 {
+            return Err(RegistryError::Package(format!(
+                "Checksum mismatch: expected {expected_sha256}, got {content_sha256}"
+            )));
+        }
+    }
+    validate_package_manifest(&package_data, &harness_name, &version_str)?;
     let package_size = package_data.len() as i64;
 
     // Store package
@@ -356,9 +403,9 @@ pub async fn publish_version_handler(
         harness.id,
         &semver_version,
         git_ref.as_deref(),
-        None, // git_commit_sha would need Git lookup
+        git_commit_sha.as_deref(),
         description.as_deref(),
-        None, // readme_content
+        readme_content.as_deref(),
         package_size,
         &content_sha256,
         &storage_path,
@@ -437,12 +484,8 @@ pub async fn download_version_handler(
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
     let version = get_harness_version(state.db.pool(), harness.id, &version_str).await?;
 
-    // Retrieve package
     let storage = create_storage(&state.config.storage)?;
-    let data = storage.retrieve(&version.storage_path).await?;
-
-    // Verify hash
-    crate::storage::verify_content(&data, &version.content_sha256)?;
+    let body = storage.retrieve_body(&version.storage_path).await?;
 
     // Increment download count (fire and forget)
     let pool = state.db.pool().clone();
@@ -451,12 +494,12 @@ pub async fn download_version_handler(
         let _ = increment_download_count(&pool, version_id).await;
     });
 
-    let body = Body::from(data);
     let filename = format!("{}-{}-{}.tar.gz", org_name, harness_name, version_str);
 
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/gzip")
+        .header("x-content-sha256", version.content_sha256)
         .header(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{}\"", filename),
@@ -467,4 +510,49 @@ pub async fn download_version_handler(
         })?;
 
     Ok(response.into_response())
+}
+
+fn validate_package_manifest(
+    package_data: &[u8],
+    expected_name: &str,
+    expected_version: &str,
+) -> RegistryResult<()> {
+    let decoder = GzDecoder::new(package_data);
+    let mut archive = Archive::new(decoder);
+    let mut manifest_contents = None;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        if path
+            .file_name()
+            .is_some_and(|file_name| file_name == "craft.toml")
+        {
+            let mut contents = String::new();
+            entry.read_to_string(&mut contents)?;
+            manifest_contents = Some(contents);
+            break;
+        }
+    }
+
+    let manifest_contents = manifest_contents.ok_or_else(|| {
+        RegistryError::Package("Package must include a craft.toml manifest".to_string())
+    })?;
+    let manifest = craft_manifest::parse_manifest(&manifest_contents)
+        .map_err(|err| RegistryError::Package(format!("Invalid craft.toml: {err}")))?;
+
+    if manifest.harness.name != expected_name {
+        return Err(RegistryError::Package(format!(
+            "Manifest harness.name `{}` does not match route harness `{expected_name}`",
+            manifest.harness.name
+        )));
+    }
+    if manifest.harness.version != expected_version {
+        return Err(RegistryError::Package(format!(
+            "Manifest harness.version `{}` does not match uploaded version `{expected_version}`",
+            manifest.harness.version
+        )));
+    }
+
+    Ok(())
 }
