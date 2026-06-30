@@ -1,7 +1,9 @@
 //! Local filesystem storage backend
 
 use async_trait::async_trait;
+use axum::body::Body;
 use std::path::PathBuf;
+use tokio_util::io::ReaderStream;
 
 use crate::{
     error::RegistryResult,
@@ -61,6 +63,22 @@ impl Storage for LocalStorage {
     async fn retrieve(&self, path: &str) -> RegistryResult<Vec<u8>> {
         let full_path = self.full_path(path);
         read_file_async(&full_path).await
+    }
+
+    async fn retrieve_body(&self, path: &str) -> RegistryResult<Body> {
+        let full_path = self.full_path(path);
+        let file = tokio::fs::File::open(&full_path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                crate::error::RegistryError::NotFound(format!(
+                    "File not found: {}",
+                    full_path.display()
+                ))
+            } else {
+                crate::error::RegistryError::Io(e)
+            }
+        })?;
+
+        Ok(Body::from_stream(ReaderStream::new(file)))
     }
 
     async fn exists(&self, path: &str) -> RegistryResult<bool> {

@@ -41,7 +41,7 @@ toml = "0.8"
 semver = { version = "1.0", features = ["serde"] }
 
 # HTTP Client
-reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls", "stream"] }
 bytes = "1.0"
 
 # Storage & Crypto
@@ -50,6 +50,7 @@ tar = "0.4"
 flate2 = "1.0"
 tempfile = "3.0"
 walkdir = "2.0"
+tokio-util = { version = "0.7", features = ["io"] }
 
 # IDs & Time
 uuid = { version = "1.0", features = ["v4", "serde"] }

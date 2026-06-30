@@ -4,6 +4,7 @@
 //! storage using SHA-256 hashes.
 
 use async_trait::async_trait;
+use axum::body::Body;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::io::AsyncReadExt;
@@ -14,8 +15,10 @@ use crate::{
 };
 
 mod local;
+mod s3;
 
 pub use local::LocalStorage;
+pub use s3::S3Storage;
 
 /// Storage backend trait
 #[async_trait]
@@ -32,6 +35,11 @@ pub trait Storage: Send + Sync {
     /// Retrieve a package by storage path
     async fn retrieve(&self, path: &str) -> RegistryResult<Vec<u8>>;
 
+    /// Retrieve a package as an HTTP response body.
+    async fn retrieve_body(&self, path: &str) -> RegistryResult<Body> {
+        Ok(Body::from(self.retrieve(path).await?))
+    }
+
     /// Check if a package exists
     async fn exists(&self, path: &str) -> RegistryResult<bool>;
 
@@ -46,9 +54,19 @@ pub trait Storage: Send + Sync {
 pub fn create_storage(config: &StorageConfig) -> RegistryResult<Box<dyn Storage>> {
     match config {
         StorageConfig::Local { base_path } => Ok(Box::new(LocalStorage::new(base_path)?)),
-        StorageConfig::S3 { .. } => Err(RegistryError::NotImplemented(
-            "S3 storage not yet implemented".to_string(),
-        )),
+        StorageConfig::S3 {
+            bucket,
+            region,
+            endpoint,
+            access_key_id,
+            secret_access_key,
+        } => Ok(Box::new(S3Storage::new(
+            bucket,
+            region,
+            endpoint.as_deref(),
+            access_key_id,
+            secret_access_key,
+        )?)),
     }
 }
 
