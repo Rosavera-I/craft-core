@@ -146,7 +146,7 @@ impl Server {
             .route("/api/v1/orgs/:name/teams/:team_name/members", post(invite_team_member))
             .route("/api/v1/orgs/:name/teams/:team_name/members/:user_id", delete(remove_team_member))
             // Harness routes
-            .route("/api/v1/harnesses", post(create_harness_handler))
+            .route("/api/v1/harnesses/:org", post(create_harness_handler))
             .route("/api/v1/harnesses/:org/:name", get(get_harness_handler))
             .route("/api/v1/harnesses/:org/:name", put(update_harness_handler))
             .route("/api/v1/harnesses/:org/:name", delete(delete_harness_handler))

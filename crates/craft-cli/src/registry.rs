@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct RegistryConfig {
     pub registry_url: String,
     pub auth_token: String,
+    pub default_org: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +65,36 @@ pub struct TeamResponse {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct HarnessResponse {
+    pub id: String,
+    pub org: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub visibility: String,
+    pub keywords: Option<Vec<String>>,
+    pub git_repository_url: Option<String>,
+    pub total_downloads: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VersionResponse {
+    pub id: String,
+    pub version: String,
+    pub git_ref: Option<String>,
+    pub git_commit_sha: Option<String>,
+    pub description: Option<String>,
+    pub readme_content: Option<String>,
+    pub package_size_bytes: Option<i64>,
+    pub content_sha256: String,
+    pub download_count: i64,
+    pub is_yanked: bool,
+    pub yanked_reason: Option<String>,
+    pub published_by: Option<String>,
+    pub published_at: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CreateOrgRequest<'a> {
     pub name: &'a str,
@@ -92,9 +123,20 @@ pub struct InviteTeamMemberRequest<'a> {
     pub role: Option<&'a str>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct CreateHarnessRequest<'a> {
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub visibility: Option<&'a str>,
+    pub keywords: Option<&'a [String]>,
+    pub team: Option<&'a str>,
+    pub git_repository_url: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CloudRegistry {
     client: RegistryClient,
+    default_org: Option<String>,
 }
 
 impl CloudRegistry {
@@ -103,9 +145,29 @@ impl CloudRegistry {
         let config: RegistryConfig = toml::from_str(&contents)
             .map_err(|err| RegistryError::Config(format!("invalid registry config: {err}")))?;
 
+        Self::from_config(config, None)
+    }
+
+    pub fn from_config_file_with_registry(
+        path: &Path,
+        registry_url: Option<&str>,
+    ) -> RegistryResult<Self> {
+        let contents = fs::read_to_string(path).map_err(RegistryError::Io)?;
+        let config: RegistryConfig = toml::from_str(&contents)
+            .map_err(|err| RegistryError::Config(format!("invalid registry config: {err}")))?;
+        Self::from_config(config, registry_url)
+    }
+
+    fn from_config(config: RegistryConfig, registry_url: Option<&str>) -> RegistryResult<Self> {
+        let registry_url = registry_url.unwrap_or(&config.registry_url);
         Ok(Self {
-            client: RegistryClient::new(&config.registry_url)?.with_token(config.auth_token),
+            client: RegistryClient::new(registry_url)?.with_token(config.auth_token),
+            default_org: config.default_org,
         })
+    }
+
+    pub fn default_org(&self) -> Option<&str> {
+        self.default_org.as_deref()
     }
 
     pub async fn list_orgs(&self) -> RegistryResult<Vec<OrgResponse>> {
@@ -242,6 +304,147 @@ impl CloudRegistry {
                 path_segment(team)?
             ))
             .await
+    }
+
+    pub async fn get_harness(&self, org: &str, name: &str) -> RegistryResult<HarnessResponse> {
+        self.client
+            .get(&format!(
+                "/api/v1/harnesses/{}/{}",
+                path_segment(org)?,
+                path_segment(name)?
+            ))
+            .await
+    }
+
+    pub async fn create_harness(
+        &self,
+        org: &str,
+        request: &CreateHarnessRequest<'_>,
+    ) -> RegistryResult<HarnessResponse> {
+        self.client
+            .post(
+                &format!("/api/v1/harnesses/{}", path_segment(org)?),
+                request,
+            )
+            .await
+    }
+
+    pub async fn list_harness_versions(
+        &self,
+        org: &str,
+        name: &str,
+    ) -> RegistryResult<Vec<VersionResponse>> {
+        self.client
+            .get(&format!(
+                "/api/v1/harnesses/{}/{}/versions",
+                path_segment(org)?,
+                path_segment(name)?
+            ))
+            .await
+    }
+
+    pub async fn resolve_version(
+        &self,
+        org: &str,
+        name: &str,
+        requirement: Option<&str>,
+    ) -> RegistryResult<VersionResponse> {
+        let mut versions = self.list_harness_versions(org, name).await?;
+        versions.retain(|version| !version.is_yanked);
+        if versions.is_empty() {
+            return Err(RegistryError::NotFound(format!(
+                "no published versions found for {org}/{name}"
+            )));
+        }
+
+        if let Some(requirement) = requirement {
+            let req = semver::VersionReq::parse(requirement).map_err(|err| {
+                RegistryError::Validation(format!(
+                    "invalid version requirement `{requirement}`: {err}"
+                ))
+            })?;
+            versions
+                .into_iter()
+                .filter_map(|version| {
+                    semver::Version::parse(&version.version)
+                        .ok()
+                        .filter(|parsed| req.matches(parsed))
+                        .map(|parsed| (parsed, version))
+                })
+                .max_by(|left, right| left.0.cmp(&right.0))
+                .map(|(_, version)| version)
+                .ok_or_else(|| {
+                    RegistryError::NotFound(format!(
+                        "no version of {org}/{name} matches {requirement}"
+                    ))
+                })
+        } else {
+            versions
+                .into_iter()
+                .filter_map(|version| {
+                    semver::Version::parse(&version.version)
+                        .ok()
+                        .map(|parsed| (parsed, version))
+                })
+                .max_by(|left, right| left.0.cmp(&right.0))
+                .map(|(_, version)| version)
+                .ok_or_else(|| {
+                    RegistryError::NotFound(format!(
+                        "no valid semantic versions found for {org}/{name}"
+                    ))
+                })
+        }
+    }
+
+    pub async fn publish_harness(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        description: Option<&str>,
+        package: Vec<u8>,
+    ) -> RegistryResult<VersionResponse> {
+        let package_part = reqwest::multipart::Part::bytes(package)
+            .file_name(format!("{org}-{name}-{version}.tar.gz"))
+            .mime_str("application/gzip")
+            .map_err(|err| {
+                RegistryError::Validation(format!("invalid package MIME type: {err}"))
+            })?;
+        let mut form = reqwest::multipart::Form::new()
+            .text("version", version.to_string())
+            .part("package", package_part);
+        if let Some(description) = description {
+            form = form.text("description", description.to_string());
+        }
+
+        self.client
+            .post_multipart(
+                &format!(
+                    "/api/v1/harnesses/{}/{}/versions",
+                    path_segment(org)?,
+                    path_segment(name)?
+                ),
+                form,
+            )
+            .await
+    }
+
+    pub async fn download_harness(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+    ) -> RegistryResult<Vec<u8>> {
+        let bytes = self
+            .client
+            .download(&format!(
+                "/api/v1/harnesses/{}/{}/download/{}",
+                path_segment(org)?,
+                path_segment(name)?,
+                path_segment(version)?
+            ))
+            .await?;
+        Ok(bytes.to_vec())
     }
 }
 
