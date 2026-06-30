@@ -38,10 +38,27 @@ pub struct MemberResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum InviteOrgMemberResponse {
+    Member {
+        user: UserResponse,
+        role: String,
+        joined_at: String,
+    },
+    Invitation {
+        id: String,
+        email: String,
+        role: String,
+        created_at: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct TeamResponse {
     pub id: String,
     pub org: String,
     pub name: String,
+    pub display_name: Option<String>,
     pub description: Option<String>,
     pub visibility: String,
     pub created_at: String,
@@ -64,13 +81,14 @@ pub struct InviteOrgMemberRequest<'a> {
 #[derive(Debug, Serialize)]
 pub struct CreateTeamRequest<'a> {
     pub name: &'a str,
+    pub display_name: Option<&'a str>,
     pub description: Option<&'a str>,
     pub visibility: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct InviteTeamMemberRequest<'a> {
-    pub username: &'a str,
+    pub user_id: &'a str,
     pub role: Option<&'a str>,
 }
 
@@ -91,22 +109,22 @@ impl CloudRegistry {
     }
 
     pub async fn list_orgs(&self) -> RegistryResult<Vec<OrgResponse>> {
-        self.client.get("api/v1/user/orgs").await
+        self.client.get("/api/v1/orgs").await
     }
 
     pub async fn create_org(&self, request: &CreateOrgRequest<'_>) -> RegistryResult<OrgResponse> {
-        self.client.post("api/v1/orgs", request).await
+        self.client.post("/api/v1/orgs", request).await
     }
 
     pub async fn get_org(&self, name: &str) -> RegistryResult<OrgResponse> {
         self.client
-            .get(&format!("api/v1/user/orgs/{}", path_segment(name)?))
+            .get(&format!("/api/v1/orgs/{}", path_segment(name)?))
             .await
     }
 
     pub async fn list_org_members(&self, name: &str) -> RegistryResult<Vec<MemberResponse>> {
         self.client
-            .get(&format!("api/v1/orgs/{}/members", path_segment(name)?))
+            .get(&format!("/api/v1/orgs/{}/members", path_segment(name)?))
             .await
     }
 
@@ -114,10 +132,10 @@ impl CloudRegistry {
         &self,
         name: &str,
         request: &InviteOrgMemberRequest<'_>,
-    ) -> RegistryResult<MemberResponse> {
+    ) -> RegistryResult<InviteOrgMemberResponse> {
         self.client
             .post(
-                &format!("api/v1/orgs/{}/members", path_segment(name)?),
+                &format!("/api/v1/orgs/{}/invites", path_segment(name)?),
                 request,
             )
             .await
@@ -126,7 +144,7 @@ impl CloudRegistry {
     pub async fn remove_org_member(&self, name: &str, user_id: &str) -> RegistryResult<()> {
         self.client
             .delete_empty(&format!(
-                "api/v1/orgs/{}/members/{}",
+                "/api/v1/orgs/{}/members/{}",
                 path_segment(name)?,
                 path_segment(user_id)?
             ))
@@ -135,13 +153,13 @@ impl CloudRegistry {
 
     pub async fn delete_org(&self, name: &str) -> RegistryResult<()> {
         self.client
-            .delete_empty(&format!("api/v1/orgs/{}", path_segment(name)?))
+            .delete_empty(&format!("/api/v1/orgs/{}", path_segment(name)?))
             .await
     }
 
     pub async fn list_teams(&self, org: &str) -> RegistryResult<Vec<TeamResponse>> {
         self.client
-            .get(&format!("api/v1/orgs/{}/teams", path_segment(org)?))
+            .get(&format!("/api/v1/orgs/{}/teams", path_segment(org)?))
             .await
     }
 
@@ -152,7 +170,7 @@ impl CloudRegistry {
     ) -> RegistryResult<TeamResponse> {
         self.client
             .post(
-                &format!("api/v1/orgs/{}/teams", path_segment(org)?),
+                &format!("/api/v1/orgs/{}/teams", path_segment(org)?),
                 request,
             )
             .await
@@ -161,7 +179,7 @@ impl CloudRegistry {
     pub async fn get_team(&self, org: &str, team: &str) -> RegistryResult<TeamResponse> {
         self.client
             .get(&format!(
-                "api/v1/teams/{}/{}",
+                "/api/v1/orgs/{}/teams/{}",
                 path_segment(org)?,
                 path_segment(team)?
             ))
@@ -175,7 +193,7 @@ impl CloudRegistry {
     ) -> RegistryResult<Vec<MemberResponse>> {
         self.client
             .get(&format!(
-                "api/v1/teams/{}/{}/members",
+                "/api/v1/orgs/{}/teams/{}/members",
                 path_segment(org)?,
                 path_segment(team)?
             ))
@@ -191,7 +209,7 @@ impl CloudRegistry {
         self.client
             .post(
                 &format!(
-                    "api/v1/teams/{}/{}/members",
+                    "/api/v1/orgs/{}/teams/{}/members",
                     path_segment(org)?,
                     path_segment(team)?
                 ),
@@ -204,14 +222,14 @@ impl CloudRegistry {
         &self,
         org: &str,
         team: &str,
-        username: &str,
+        user_id: &str,
     ) -> RegistryResult<()> {
         self.client
             .delete_empty(&format!(
-                "api/v1/teams/{}/{}/members/{}",
+                "/api/v1/orgs/{}/teams/{}/members/{}",
                 path_segment(org)?,
                 path_segment(team)?,
-                path_segment(username)?
+                path_segment(user_id)?
             ))
             .await
     }
@@ -219,7 +237,7 @@ impl CloudRegistry {
     pub async fn delete_team(&self, org: &str, team: &str) -> RegistryResult<()> {
         self.client
             .delete_empty(&format!(
-                "api/v1/teams/{}/{}",
+                "/api/v1/orgs/{}/teams/{}",
                 path_segment(org)?,
                 path_segment(team)?
             ))

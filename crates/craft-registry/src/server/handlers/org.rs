@@ -232,6 +232,23 @@ pub struct OrgMemberResponse {
     pub joined_at: String,
 }
 
+/// Invite org member response
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum InviteOrgMemberResponse {
+    Member {
+        user: super::UserResponse,
+        role: String,
+        joined_at: String,
+    },
+    Invitation {
+        id: String,
+        email: String,
+        role: String,
+        created_at: String,
+    },
+}
+
 /// List org members handler
 pub async fn list_org_members_handler(
     State(state): State<Arc<AppState>>,
@@ -277,7 +294,7 @@ pub async fn invite_org_member(
     auth_user: AuthUser,
     Path(name): Path<String>,
     Json(req): Json<InviteOrgMemberRequest>,
-) -> RegistryResult<Json<OrgMemberResponse>> {
+) -> RegistryResult<Json<InviteOrgMemberResponse>> {
     let org = get_org_by_name(state.db.pool(), &name).await?;
 
     // Check permissions
@@ -291,8 +308,6 @@ pub async fn invite_org_member(
         ));
     }
 
-    let target_user = get_user_by_email(state.db.pool(), &req.email).await?;
-
     let role = match req.role.as_deref() {
         Some("owner") => Role::Owner,
         Some("admin") => Role::Admin,
@@ -300,13 +315,30 @@ pub async fn invite_org_member(
         _ => Role::Member,
     };
 
-    let member = add_org_member(state.db.pool(), org.id, target_user.id, role).await?;
+    match get_user_by_email(state.db.pool(), &req.email).await {
+        Ok(target_user) => {
+            let member = add_org_member(state.db.pool(), org.id, target_user.id, role).await?;
 
-    Ok(Json(OrgMemberResponse {
-        user: target_user.into(),
-        role: member.role,
-        joined_at: member.created_at.to_rfc3339(),
-    }))
+            Ok(Json(InviteOrgMemberResponse::Member {
+                user: target_user.into(),
+                role: member.role,
+                joined_at: member.created_at.to_rfc3339(),
+            }))
+        }
+        Err(RegistryError::NotFound(_)) => {
+            let invitation =
+                create_org_invitation(state.db.pool(), org.id, &req.email, role, auth_user.user_id)
+                    .await?;
+
+            Ok(Json(InviteOrgMemberResponse::Invitation {
+                id: invitation.id.to_string(),
+                email: invitation.email,
+                role: invitation.role,
+                created_at: invitation.created_at.to_rfc3339(),
+            }))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Remove org member handler

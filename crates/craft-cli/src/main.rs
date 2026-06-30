@@ -213,11 +213,11 @@ Usage:
   craft org remove-member <org> <user-id> [--yes]
   craft org delete <org> [--yes]
   craft team list <org>
-  craft team create <org> <name> [--description <text>] [--visibility <visibility>]
+  craft team create <org> <name> [--display-name <name>] [--description <text>] [--visibility <visibility>]
   craft team info <org> <team>
   craft team members <org> <team>
-  craft team add-member <org> <team> <username> [--role <role>]
-  craft team remove-member <org> <team> <username> [--yes]
+  craft team add-member <org> <team> <user-id> [--role <role>]
+  craft team remove-member <org> <team> <user-id> [--yes]
   craft team delete <org> <team> [--yes]
   craft memory log <scope> <key> <value>
   craft memory recall <scope> <key>
@@ -373,6 +373,7 @@ fn completion_command() -> Command {
                     Command::new("create")
                         .arg(Arg::new("org").required(true))
                         .arg(Arg::new("name").required(true))
+                        .arg(Arg::new("display-name").long("display-name"))
                         .arg(Arg::new("description").long("description"))
                         .arg(Arg::new("visibility").long("visibility")),
                 )
@@ -390,14 +391,14 @@ fn completion_command() -> Command {
                     Command::new("add-member")
                         .arg(Arg::new("org").required(true))
                         .arg(Arg::new("team").required(true))
-                        .arg(Arg::new("username").required(true))
+                        .arg(Arg::new("user-id").required(true))
                         .arg(Arg::new("role").long("role")),
                 )
                 .subcommand(
                     Command::new("remove-member")
                         .arg(Arg::new("org").required(true))
                         .arg(Arg::new("team").required(true))
-                        .arg(Arg::new("username").required(true))
+                        .arg(Arg::new("user-id").required(true))
                         .arg(
                             Arg::new("yes")
                                 .long("yes")
@@ -521,6 +522,286 @@ fn save_registry_credentials(
     fs::write(path, content)
         .map_err(|err| CliError::io(format!("failed to write {}", path.display()), err))?;
     Ok(())
+}
+
+fn org_command(args: &[String]) -> Result<(), CliError> {
+    let registry = cloud_registry()?;
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let orgs = registry::block_on(registry.list_orgs())?;
+            if orgs.is_empty() {
+                ui::message("no organizations found");
+            } else {
+                let rows: Vec<Vec<String>> = orgs
+                    .into_iter()
+                    .map(|org| {
+                        vec![
+                            org.name,
+                            org.display_name.unwrap_or_default(),
+                            org.visibility,
+                            org.owner_id.unwrap_or_default(),
+                        ]
+                    })
+                    .collect();
+                ui::table(&["name", "display_name", "visibility", "owner"], &rows);
+            }
+            Ok(())
+        }
+        Some("create") => {
+            let name = positional(args, 1, "usage: craft org create <name> [--display-name <name>] [--description <text>] [--visibility <visibility>]")?;
+            let display_name = optional_flag(args, "--display-name").or_else(|| {
+                if io::stdin().is_terminal() {
+                    dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Display name")
+                        .default(name.clone())
+                        .interact_text()
+                        .ok()
+                } else {
+                    None
+                }
+            });
+            let description = optional_flag(args, "--description");
+            let visibility = optional_flag(args, "--visibility");
+            let spinner = ui::spinner(format!("creating organization {name}"));
+            let org = registry::block_on(registry.create_org(&registry::CreateOrgRequest {
+                name: &name,
+                display_name: display_name.as_deref(),
+                description: description.as_deref(),
+                visibility: visibility.as_deref(),
+            }))?;
+            ui::finish_spinner(spinner, format!("created organization {}", org.name));
+            ui::success(format!("created organization {}", org.name));
+            Ok(())
+        }
+        Some("info") => {
+            let name = positional(args, 1, "usage: craft org info <name>")?;
+            let org = registry::block_on(registry.get_org(&name))?;
+            ui::table(
+                &["field", "value"],
+                &[
+                    vec!["name".to_string(), org.name],
+                    vec!["display_name".to_string(), org.display_name.unwrap_or_default()],
+                    vec!["visibility".to_string(), org.visibility],
+                    vec!["owner_id".to_string(), org.owner_id.unwrap_or_default()],
+                    vec!["created_at".to_string(), org.created_at],
+                ],
+            );
+            Ok(())
+        }
+        Some("invite") => {
+            let org = positional(args, 1, "usage: craft org invite <org> <email> [--role <role>]")?;
+            let email = positional(args, 2, "usage: craft org invite <org> <email> [--role <role>]")?;
+            let role = optional_flag(args, "--role").unwrap_or_else(|| "member".to_string());
+            let spinner = ui::spinner(format!("inviting {email} to {org}"));
+            let member = registry::block_on(registry.invite_org_member(
+                &org,
+                &registry::InviteOrgMemberRequest {
+                    email: &email,
+                    role: Some(&role),
+                },
+            ))?;
+            ui::finish_spinner(spinner, format!("invited {}", member.user.email));
+            ui::success(format!("invited {} to {org} as {}", member.user.email, member.role));
+            Ok(())
+        }
+        Some("members") => {
+            let org = positional(args, 1, "usage: craft org members <org>")?;
+            let members = registry::block_on(registry.list_org_members(&org))?;
+            print_members(members);
+            Ok(())
+        }
+        Some("remove-member") => {
+            let org = positional(args, 1, "usage: craft org remove-member <org> <user-id> [--yes]")?;
+            let user_id = positional(args, 2, "usage: craft org remove-member <org> <user-id> [--yes]")?;
+            confirm_or_cancel(args, format!("Remove user `{user_id}` from organization `{org}`?"))?;
+            let spinner = ui::spinner(format!("removing {user_id} from {org}"));
+            registry::block_on(registry.remove_org_member(&org, &user_id))?;
+            ui::finish_spinner(spinner, format!("removed {user_id}"));
+            ui::success(format!("removed {user_id} from {org}"));
+            Ok(())
+        }
+        Some("delete") => {
+            let org = positional(args, 1, "usage: craft org delete <org> [--yes]")?;
+            confirm_or_cancel(args, format!("Delete organization `{org}`?"))?;
+            let spinner = ui::spinner(format!("deleting organization {org}"));
+            registry::block_on(registry.delete_org(&org))?;
+            ui::finish_spinner(spinner, format!("deleted {org}"));
+            ui::success(format!("deleted organization {org}"));
+            Ok(())
+        }
+        _ => Err(CliError::usage(
+            "usage: craft org <list|create|info|invite|members|remove-member|delete>",
+        )),
+    }
+}
+
+fn team_command(args: &[String]) -> Result<(), CliError> {
+    let registry = cloud_registry()?;
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let org = positional(args, 1, "usage: craft team list <org>")?;
+            let teams = registry::block_on(registry.list_teams(&org))?;
+            if teams.is_empty() {
+                ui::message("no teams found");
+            } else {
+                let rows: Vec<Vec<String>> = teams
+                    .into_iter()
+                    .map(|team| {
+                        vec![
+                            team.name,
+                            team.display_name.unwrap_or_default(),
+                            team.visibility,
+                            team.description.unwrap_or_default(),
+                        ]
+                    })
+                    .collect();
+                ui::table(&["name", "display_name", "visibility", "description"], &rows);
+            }
+            Ok(())
+        }
+        Some("create") => {
+            let org = positional(args, 1, "usage: craft team create <org> <name> [--display-name <name>] [--description <text>] [--visibility <visibility>]")?;
+            let name = positional(args, 2, "usage: craft team create <org> <name> [--display-name <name>] [--description <text>] [--visibility <visibility>]")?;
+            let display_name = optional_flag(args, "--display-name").or_else(|| {
+                if io::stdin().is_terminal() {
+                    dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Display name")
+                        .default(name.clone())
+                        .interact_text()
+                        .ok()
+                } else {
+                    None
+                }
+            });
+            let description = optional_flag(args, "--description");
+            let visibility = optional_flag(args, "--visibility");
+            let spinner = ui::spinner(format!("creating team {org}/{name}"));
+            let team = registry::block_on(registry.create_team(
+                &org,
+                &registry::CreateTeamRequest {
+                    name: &name,
+                    display_name: display_name.as_deref(),
+                    description: description.as_deref(),
+                    visibility: visibility.as_deref(),
+                },
+            ))?;
+            ui::finish_spinner(spinner, format!("created team {}/{}", team.org, team.name));
+            ui::success(format!("created team {}/{}", team.org, team.name));
+            Ok(())
+        }
+        Some("info") => {
+            let org = positional(args, 1, "usage: craft team info <org> <team>")?;
+            let team_name = positional(args, 2, "usage: craft team info <org> <team>")?;
+            let team = registry::block_on(registry.get_team(&org, &team_name))?;
+            ui::table(
+                &["field", "value"],
+                &[
+                    vec!["org".to_string(), team.org],
+                    vec!["name".to_string(), team.name],
+                    vec!["display_name".to_string(), team.display_name.unwrap_or_default()],
+                    vec!["visibility".to_string(), team.visibility],
+                    vec!["description".to_string(), team.description.unwrap_or_default()],
+                    vec!["created_at".to_string(), team.created_at],
+                ],
+            );
+            Ok(())
+        }
+        Some("members") => {
+            let org = positional(args, 1, "usage: craft team members <org> <team>")?;
+            let team = positional(args, 2, "usage: craft team members <org> <team>")?;
+            let members = registry::block_on(registry.list_team_members(&org, &team))?;
+            print_members(members);
+            Ok(())
+        }
+        Some("add-member") => {
+            let org = positional(args, 1, "usage: craft team add-member <org> <team> <user-id> [--role <role>]")?;
+            let team = positional(args, 2, "usage: craft team add-member <org> <team> <user-id> [--role <role>]")?;
+            let user_id = positional(args, 3, "usage: craft team add-member <org> <team> <user-id> [--role <role>]")?;
+            let role = optional_flag(args, "--role").unwrap_or_else(|| "member".to_string());
+            let spinner = ui::spinner(format!("adding {user_id} to {org}/{team}"));
+            let member = registry::block_on(registry.invite_team_member(
+                &org,
+                &team,
+                &registry::InviteTeamMemberRequest {
+                    user_id: &user_id,
+                    role: Some(&role),
+                },
+            ))?;
+            ui::finish_spinner(spinner, format!("added {}", member.user.username));
+            ui::success(format!("added {} to {org}/{team} as {}", member.user.username, member.role));
+            Ok(())
+        }
+        Some("remove-member") => {
+            let org = positional(args, 1, "usage: craft team remove-member <org> <team> <user-id> [--yes]")?;
+            let team = positional(args, 2, "usage: craft team remove-member <org> <team> <user-id> [--yes]")?;
+            let user_id = positional(args, 3, "usage: craft team remove-member <org> <team> <user-id> [--yes]")?;
+            confirm_or_cancel(args, format!("Remove user `{user_id}` from team `{org}/{team}`?"))?;
+            let spinner = ui::spinner(format!("removing {user_id} from {org}/{team}"));
+            registry::block_on(registry.remove_team_member(&org, &team, &user_id))?;
+            ui::finish_spinner(spinner, format!("removed {user_id}"));
+            ui::success(format!("removed {user_id} from {org}/{team}"));
+            Ok(())
+        }
+        Some("delete") => {
+            let org = positional(args, 1, "usage: craft team delete <org> <team> [--yes]")?;
+            let team = positional(args, 2, "usage: craft team delete <org> <team> [--yes]")?;
+            confirm_or_cancel(args, format!("Delete team `{org}/{team}`?"))?;
+            let spinner = ui::spinner(format!("deleting team {org}/{team}"));
+            registry::block_on(registry.delete_team(&org, &team))?;
+            ui::finish_spinner(spinner, format!("deleted {org}/{team}"));
+            ui::success(format!("deleted team {org}/{team}"));
+            Ok(())
+        }
+        _ => Err(CliError::usage(
+            "usage: craft team <list|create|info|members|add-member|remove-member|delete>",
+        )),
+    }
+}
+
+fn cloud_registry() -> Result<registry::CloudRegistry, CliError> {
+    let path = default_registry_config_path();
+    if !path.exists() {
+        return Err(CliError::Runtime(format!(
+            "registry credentials not found at {}; run `craft login --api-key <key> [--registry <url>]` first",
+            path.display()
+        )));
+    }
+    Ok(registry::CloudRegistry::from_config_file(&path)?)
+}
+
+fn confirm_or_cancel(args: &[String], prompt: String) -> Result<(), CliError> {
+    let confirmed = args.iter().any(|value| value == "--yes" || value == "-y")
+        || (!io::stdin().is_terminal()
+            || Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt(prompt)
+                .default(false)
+                .interact()
+                .map_err(|err| CliError::io("failed to read confirmation", err))?);
+    if confirmed {
+        Ok(())
+    } else {
+        Err(CliError::Runtime("operation cancelled".to_string()))
+    }
+}
+
+fn print_members(members: Vec<registry::MemberResponse>) {
+    if members.is_empty() {
+        ui::message("no members found");
+    } else {
+        let rows: Vec<Vec<String>> = members
+            .into_iter()
+            .map(|member| {
+                vec![
+                    member.user.id,
+                    member.user.username,
+                    member.user.email,
+                    member.role,
+                    member.joined_at,
+                ]
+            })
+            .collect();
+        ui::table(&["id", "username", "email", "role", "joined_at"], &rows);
+    }
 }
 
 fn toml_escape(value: &str) -> String {

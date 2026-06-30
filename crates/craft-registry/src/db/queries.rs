@@ -837,6 +837,41 @@ pub async fn list_org_members(
     Ok(results)
 }
 
+/// Create or update a pending organization invitation.
+pub async fn create_org_invitation(
+    pool: &PgPool,
+    org_id: Uuid,
+    email: &str,
+    role: Role,
+    invited_by: Uuid,
+) -> RegistryResult<OrgInvitation> {
+    let role_str = match role {
+        Role::Owner => "owner",
+        Role::Admin => "admin",
+        Role::Maintainer => "maintainer",
+        Role::Member => "member",
+    };
+
+    let invitation = sqlx::query_as::<_, OrgInvitation>(
+        r#"
+        INSERT INTO org_invitations (org_id, email, role, invited_by)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (org_id, email) DO UPDATE SET
+            role = EXCLUDED.role,
+            invited_by = EXCLUDED.invited_by
+        RETURNING *
+        "#,
+    )
+    .bind(org_id)
+    .bind(email)
+    .bind(role_str)
+    .bind(invited_by)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(invitation)
+}
+
 // ============================================================================
 // Team Member Queries
 // ============================================================================

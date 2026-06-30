@@ -144,6 +144,19 @@ impl OrgMember {
     }
 }
 
+/// Pending organization invitation for an email address.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OrgInvitation {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub invited_by: Option<Uuid>,
+    pub accepted_by: Option<Uuid>,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Team membership with role
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct TeamMember {
