@@ -115,6 +115,20 @@ impl RegistryClient {
         handle_response(response).await
     }
 
+    /// DELETE request for endpoints that return an empty success body.
+    pub async fn delete_empty(&self, path: &str) -> RegistryResult<()> {
+        let response = self
+            .build_request(reqwest::Method::DELETE, path)?
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(parse_error(response).await)
+        }
+    }
+
     /// POST multipart request (for file uploads)
     pub async fn post_multipart<T>(
         &self,

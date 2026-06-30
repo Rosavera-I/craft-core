@@ -177,6 +177,8 @@ impl fmt::Display for Visibility {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
+    /// Full ownership of an organization
+    Owner,
     /// Can view and use harnesses
     Member,
     /// Can publish and manage harnesses
@@ -188,6 +190,7 @@ pub enum Role {
 impl fmt::Display for Role {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Role::Owner => write!(f, "owner"),
             Role::Member => write!(f, "member"),
             Role::Maintainer => write!(f, "maintainer"),
             Role::Admin => write!(f, "admin"),

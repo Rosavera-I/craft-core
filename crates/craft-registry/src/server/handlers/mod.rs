@@ -141,8 +141,9 @@ pub async fn get_current_user(auth_user: AuthUser) -> RegistryResult<Json<UserRe
 
 // Re-export handler functions
 pub use org::{
-    create_org_handler, delete_org_handler, get_org_public, invite_org_member,
-    list_org_members_handler, list_public_orgs, remove_org_member, update_org_handler,
+    create_org_handler, delete_org_handler, get_org_handler, get_org_public, invite_org_member,
+    list_org_members_handler, list_public_orgs, list_user_orgs_handler, remove_org_member,
+    update_org_handler, update_org_member_role,
 };
 
 pub use team::{

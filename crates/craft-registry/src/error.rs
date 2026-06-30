@@ -26,6 +26,10 @@ pub enum RegistryError {
     #[error("Authentication error: {0}")]
     Auth(String),
 
+    /// Authenticated user is not allowed to perform the action.
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// JWT error
     #[error("JWT error: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),
@@ -90,6 +94,7 @@ impl RegistryError {
             RegistryError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             RegistryError::Git(_) => StatusCode::INTERNAL_SERVER_ERROR,
             RegistryError::Auth(_) => StatusCode::UNAUTHORIZED,
+            RegistryError::Forbidden(_) => StatusCode::FORBIDDEN,
             RegistryError::Jwt(_) => StatusCode::UNAUTHORIZED,
             RegistryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             RegistryError::Validation(_) => StatusCode::BAD_REQUEST,
@@ -113,6 +118,7 @@ impl RegistryError {
             RegistryError::Database(_) => "database_error",
             RegistryError::Git(_) => "git_error",
             RegistryError::Auth(_) => "auth_error",
+            RegistryError::Forbidden(_) => "forbidden",
             RegistryError::Jwt(_) => "jwt_error",
             RegistryError::Storage(_) => "storage_error",
             RegistryError::Validation(_) => "validation_error",

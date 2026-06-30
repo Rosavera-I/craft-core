@@ -312,6 +312,7 @@ impl From<VisibilityArg> for crate::Visibility {
 /// Role argument type
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum RoleArg {
+    Owner,
     Member,
     Maintainer,
     Admin,
@@ -320,6 +321,7 @@ pub enum RoleArg {
 impl From<RoleArg> for crate::Role {
     fn from(r: RoleArg) -> Self {
         match r {
+            RoleArg::Owner => crate::Role::Owner,
             RoleArg::Member => crate::Role::Member,
             RoleArg::Maintainer => crate::Role::Maintainer,
             RoleArg::Admin => crate::Role::Admin,

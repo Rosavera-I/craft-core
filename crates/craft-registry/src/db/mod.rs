@@ -60,6 +60,7 @@ pub struct Organization {
     pub name: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    pub owner_id: Option<Uuid>,
     pub avatar_url: Option<String>,
     pub website_url: Option<String>,
     pub visibility: String,
@@ -85,6 +86,7 @@ pub struct Team {
     pub id: Uuid,
     pub org_id: Uuid,
     pub name: String,
+    pub display_name: Option<String>,
     pub description: Option<String>,
     pub visibility: String,
     pub created_at: DateTime<Utc>,
@@ -134,6 +136,7 @@ impl OrgMember {
     /// Get role as enum
     pub fn role(&self) -> Role {
         match self.role.as_str() {
+            "owner" => Role::Owner,
             "admin" => Role::Admin,
             "maintainer" => Role::Maintainer,
             _ => Role::Member,
@@ -156,6 +159,7 @@ impl TeamMember {
     /// Get role as enum
     pub fn role(&self) -> Role {
         match self.role.as_str() {
+            "owner" => Role::Owner,
             "admin" => Role::Admin,
             "maintainer" => Role::Maintainer,
             _ => Role::Member,

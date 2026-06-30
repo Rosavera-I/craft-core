@@ -14,10 +14,14 @@ path = "src/main.rs"
 craft-core = { path = "../craft-core" }
 craft-lsp = { path = "../craft-lsp" }
 craft-memory = { path = "../craft-memory" }
+craft-registry = { path = "../craft-registry" }
 clap = "4.0"
 clap_complete = "4.5"
 dialoguer = "0.11"
 indicatif = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["rt-multi-thread"] }
+toml = "0.8"
 
 [lints]
 workspace = true

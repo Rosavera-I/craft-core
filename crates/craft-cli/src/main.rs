@@ -11,8 +11,10 @@ use craft_core::{
     compose_harnesses, plan_composition, test_installed_harness, validate_harness_project,
 };
 use craft_memory::{Memory, MemoryError, MemoryScope};
+use craft_registry::RegistryError;
 use dialoguer::{Confirm, theme::ColorfulTheme};
 
+mod registry;
 mod ui;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -35,6 +37,7 @@ enum CliError {
     Usage(String),
     Core(CraftError),
     Memory(MemoryError),
+    Registry(RegistryError),
     Io { message: String, source: io::Error },
     Runtime(String),
 }
@@ -45,6 +48,7 @@ impl CliError {
             CliError::Usage(_) => None,
             CliError::Core(error) => Some(error.code()),
             CliError::Memory(error) => Some(error.code()),
+            CliError::Registry(error) => Some(error.error_code()),
             CliError::Io { .. } => Some("io"),
             CliError::Runtime(_) => Some("runtime"),
         }
@@ -79,6 +83,9 @@ impl CliError {
                 "check the memory command arguments and scope; details: {}",
                 error.code()
             )),
+            CliError::Registry(_) => Some(
+                "run `craft login --api-key <key> [--registry <url>]` and try again".to_string(),
+            ),
             CliError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound => {
                 Some("check that the path or runtime exists and try again".to_string())
             }
@@ -93,6 +100,7 @@ impl std::fmt::Display for CliError {
             CliError::Usage(message) | CliError::Runtime(message) => write!(f, "{message}"),
             CliError::Core(error) => write!(f, "{error}"),
             CliError::Memory(error) => write!(f, "{error}"),
+            CliError::Registry(error) => write!(f, "{error}"),
             CliError::Io { message, .. } => write!(f, "{message}"),
         }
     }
@@ -103,6 +111,7 @@ impl std::error::Error for CliError {
         match self {
             CliError::Core(error) => Some(error),
             CliError::Memory(error) => Some(error),
+            CliError::Registry(error) => Some(error),
             CliError::Io { source, .. } => Some(source),
             _ => None,
         }
@@ -118,6 +127,12 @@ impl From<CraftError> for CliError {
 impl From<MemoryError> for CliError {
     fn from(value: MemoryError) -> Self {
         Self::Memory(value)
+    }
+}
+
+impl From<RegistryError> for CliError {
+    fn from(value: RegistryError) -> Self {
+        Self::Registry(value)
     }
 }
 
@@ -161,6 +176,8 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
         Some("lsp") => lsp_command(),
         Some("validate") => validate_command(&args[1..]),
         Some("login") => login_command(&args[1..]),
+        Some("org") => org_command(&args[1..]),
+        Some("team") => team_command(&args[1..]),
         Some("memory") => memory_command(&args[1..]),
         Some("completions") => completions_command(&args[1..]),
         Some(command) => Err(CliError::usage(format!(
@@ -188,6 +205,20 @@ Usage:
   craft lsp             Start the craft.toml language server on stdio
   craft validate [path]   Validate a harness manifest and TDD checks
   craft login --api-key <key> [--registry <url>]
+  craft org list
+  craft org create <name> [--display-name <name>] [--description <text>] [--visibility <visibility>]
+  craft org info <name>
+  craft org invite <org> <email> [--role <role>]
+  craft org members <org>
+  craft org remove-member <org> <user-id> [--yes]
+  craft org delete <org> [--yes]
+  craft team list <org>
+  craft team create <org> <name> [--description <text>] [--visibility <visibility>]
+  craft team info <org> <team>
+  craft team members <org> <team>
+  craft team add-member <org> <team> <username> [--role <role>]
+  craft team remove-member <org> <team> <username> [--yes]
+  craft team delete <org> <team> [--yes]
   craft memory log <scope> <key> <value>
   craft memory recall <scope> <key>
   craft memory record --scope <scope> --key <key> --value <value>
@@ -294,6 +325,97 @@ fn completion_command() -> Command {
                         .value_name("KEY"),
                 )
                 .arg(Arg::new("registry").long("registry").value_name("URL")),
+        )
+        .subcommand(
+            Command::new("org")
+                .subcommand(Command::new("list"))
+                .subcommand(
+                    Command::new("create")
+                        .arg(Arg::new("name").required(true))
+                        .arg(Arg::new("display-name").long("display-name"))
+                        .arg(Arg::new("description").long("description"))
+                        .arg(Arg::new("visibility").long("visibility")),
+                )
+                .subcommand(Command::new("info").arg(Arg::new("name").required(true)))
+                .subcommand(
+                    Command::new("invite")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("email").required(true))
+                        .arg(Arg::new("role").long("role")),
+                )
+                .subcommand(Command::new("members").arg(Arg::new("org").required(true)))
+                .subcommand(
+                    Command::new("remove-member")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("user-id").required(true))
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .short('y')
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("delete")
+                        .arg(Arg::new("org").required(true))
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .short('y')
+                                .action(ArgAction::SetTrue),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("team")
+                .subcommand(Command::new("list").arg(Arg::new("org").required(true)))
+                .subcommand(
+                    Command::new("create")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("name").required(true))
+                        .arg(Arg::new("description").long("description"))
+                        .arg(Arg::new("visibility").long("visibility")),
+                )
+                .subcommand(
+                    Command::new("info")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("team").required(true)),
+                )
+                .subcommand(
+                    Command::new("members")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("team").required(true)),
+                )
+                .subcommand(
+                    Command::new("add-member")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("team").required(true))
+                        .arg(Arg::new("username").required(true))
+                        .arg(Arg::new("role").long("role")),
+                )
+                .subcommand(
+                    Command::new("remove-member")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("team").required(true))
+                        .arg(Arg::new("username").required(true))
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .short('y')
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("delete")
+                        .arg(Arg::new("org").required(true))
+                        .arg(Arg::new("team").required(true))
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .short('y')
+                                .action(ArgAction::SetTrue),
+                        ),
+                ),
         )
         .subcommand(
             Command::new("memory")
@@ -405,6 +527,343 @@ fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn cloud_registry() -> Result<registry::CloudRegistry, CliError> {
+    let path = default_registry_config_path();
+    registry::CloudRegistry::from_config_file(&path).map_err(|err| match err {
+        RegistryError::Io(source) if source.kind() == io::ErrorKind::NotFound => {
+            CliError::usage(format!(
+                "registry credentials not found at {}; run `craft login --api-key <key> [--registry <url>]`",
+                path.display()
+            ))
+        }
+        other => CliError::Registry(other),
+    })
+}
+
+fn org_command(args: &[String]) -> Result<(), CliError> {
+    let registry = cloud_registry()?;
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let orgs = registry::block_on(registry.list_orgs())?;
+            if orgs.is_empty() {
+                println!("no organizations found");
+            } else {
+                let rows = orgs
+                    .into_iter()
+                    .map(|org| {
+                        vec![
+                            org.name,
+                            org.display_name.unwrap_or_default(),
+                            org.visibility,
+                            org.created_at,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                ui::table(&["name", "display", "visibility", "created"], &rows);
+            }
+            Ok(())
+        }
+        Some("create") => {
+            let name = positional(args, 1, "usage: craft org create <name> [options]")?;
+            let display_name = optional_flag(args, "--display-name");
+            let description = optional_flag(args, "--description");
+            let visibility = optional_visibility(args)?;
+            let request = registry::CreateOrgRequest {
+                name: &name,
+                display_name: display_name.as_deref(),
+                description: description.as_deref(),
+                visibility: visibility.as_deref(),
+            };
+            let org = registry::block_on(registry.create_org(&request))?;
+            ui::success(format!("created organization {}", org.name));
+            print_org(&org);
+            Ok(())
+        }
+        Some("info") => {
+            let name = positional(args, 1, "usage: craft org info <name>")?;
+            let org = registry::block_on(registry.get_org(&name))?;
+            print_org(&org);
+            Ok(())
+        }
+        Some("invite") => {
+            let org = positional(
+                args,
+                1,
+                "usage: craft org invite <org> <email> [--role <role>]",
+            )?;
+            let email = positional(
+                args,
+                2,
+                "usage: craft org invite <org> <email> [--role <role>]",
+            )?;
+            let role = optional_role(args)?;
+            let request = registry::InviteOrgMemberRequest {
+                email: &email,
+                role: role.as_deref(),
+            };
+            let member = registry::block_on(registry.invite_org_member(&org, &request))?;
+            ui::success(format!(
+                "added {} to {} as {}",
+                member.user.email, org, member.role
+            ));
+            Ok(())
+        }
+        Some("members") => {
+            let org = positional(args, 1, "usage: craft org members <org>")?;
+            let members = registry::block_on(registry.list_org_members(&org))?;
+            print_members(members);
+            Ok(())
+        }
+        Some("remove-member") => {
+            let org = positional(
+                args,
+                1,
+                "usage: craft org remove-member <org> <user-id> [--yes]",
+            )?;
+            let user_id = positional(
+                args,
+                2,
+                "usage: craft org remove-member <org> <user-id> [--yes]",
+            )?;
+            confirm_destructive(args, format!("Remove user `{user_id}` from `{org}`?"))?;
+            registry::block_on(registry.remove_org_member(&org, &user_id))?;
+            ui::success(format!("removed user {user_id} from {org}"));
+            Ok(())
+        }
+        Some("delete") => {
+            let org = positional(args, 1, "usage: craft org delete <org> [--yes]")?;
+            confirm_destructive(args, format!("Delete organization `{org}`?"))?;
+            registry::block_on(registry.delete_org(&org))?;
+            ui::success(format!("deleted organization {org}"));
+            Ok(())
+        }
+        Some("-h" | "--help") | None => {
+            ui::message("usage: craft org <list|create|info|invite|members|remove-member|delete>");
+            Ok(())
+        }
+        Some(command) => Err(CliError::usage(format!(
+            "unknown org command `{command}`\n\nRun `craft org --help`."
+        ))),
+    }
+}
+
+fn team_command(args: &[String]) -> Result<(), CliError> {
+    let registry = cloud_registry()?;
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let org = positional(args, 1, "usage: craft team list <org>")?;
+            let teams = registry::block_on(registry.list_teams(&org))?;
+            if teams.is_empty() {
+                println!("no teams found");
+            } else {
+                let rows = teams
+                    .into_iter()
+                    .map(|team| {
+                        vec![
+                            team.name,
+                            team.description.unwrap_or_default(),
+                            team.visibility,
+                            team.created_at,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                ui::table(&["name", "description", "visibility", "created"], &rows);
+            }
+            Ok(())
+        }
+        Some("create") => {
+            let org = positional(args, 1, "usage: craft team create <org> <name> [options]")?;
+            let name = positional(args, 2, "usage: craft team create <org> <name> [options]")?;
+            let description = optional_flag(args, "--description");
+            let visibility = optional_visibility(args)?;
+            let request = registry::CreateTeamRequest {
+                name: &name,
+                description: description.as_deref(),
+                visibility: visibility.as_deref(),
+            };
+            let team = registry::block_on(registry.create_team(&org, &request))?;
+            ui::success(format!("created team {}/{}", team.org, team.name));
+            print_team(&team);
+            Ok(())
+        }
+        Some("info") => {
+            let org = positional(args, 1, "usage: craft team info <org> <team>")?;
+            let team = positional(args, 2, "usage: craft team info <org> <team>")?;
+            let team = registry::block_on(registry.get_team(&org, &team))?;
+            print_team(&team);
+            Ok(())
+        }
+        Some("members") => {
+            let org = positional(args, 1, "usage: craft team members <org> <team>")?;
+            let team = positional(args, 2, "usage: craft team members <org> <team>")?;
+            let members = registry::block_on(registry.list_team_members(&org, &team))?;
+            print_members(members);
+            Ok(())
+        }
+        Some("add-member") => {
+            let org = positional(
+                args,
+                1,
+                "usage: craft team add-member <org> <team> <username> [--role <role>]",
+            )?;
+            let team = positional(
+                args,
+                2,
+                "usage: craft team add-member <org> <team> <username> [--role <role>]",
+            )?;
+            let username = positional(
+                args,
+                3,
+                "usage: craft team add-member <org> <team> <username> [--role <role>]",
+            )?;
+            let role = optional_role(args)?;
+            let request = registry::InviteTeamMemberRequest {
+                username: &username,
+                role: role.as_deref(),
+            };
+            let member = registry::block_on(registry.invite_team_member(&org, &team, &request))?;
+            ui::success(format!(
+                "added {} to {}/{} as {}",
+                member.user.username, org, team, member.role
+            ));
+            Ok(())
+        }
+        Some("remove-member") => {
+            let org = positional(
+                args,
+                1,
+                "usage: craft team remove-member <org> <team> <username> [--yes]",
+            )?;
+            let team = positional(
+                args,
+                2,
+                "usage: craft team remove-member <org> <team> <username> [--yes]",
+            )?;
+            let username = positional(
+                args,
+                3,
+                "usage: craft team remove-member <org> <team> <username> [--yes]",
+            )?;
+            confirm_destructive(args, format!("Remove `{username}` from `{org}/{team}`?"))?;
+            registry::block_on(registry.remove_team_member(&org, &team, &username))?;
+            ui::success(format!("removed {username} from {org}/{team}"));
+            Ok(())
+        }
+        Some("delete") => {
+            let org = positional(args, 1, "usage: craft team delete <org> <team> [--yes]")?;
+            let team = positional(args, 2, "usage: craft team delete <org> <team> [--yes]")?;
+            confirm_destructive(args, format!("Delete team `{org}/{team}`?"))?;
+            registry::block_on(registry.delete_team(&org, &team))?;
+            ui::success(format!("deleted team {org}/{team}"));
+            Ok(())
+        }
+        Some("-h" | "--help") | None => {
+            ui::message(
+                "usage: craft team <list|create|info|members|add-member|remove-member|delete>",
+            );
+            Ok(())
+        }
+        Some(command) => Err(CliError::usage(format!(
+            "unknown team command `{command}`\n\nRun `craft team --help`."
+        ))),
+    }
+}
+
+fn optional_visibility(args: &[String]) -> Result<Option<String>, CliError> {
+    optional_enum(args, "--visibility", &["public", "internal", "private"])
+}
+
+fn optional_role(args: &[String]) -> Result<Option<String>, CliError> {
+    optional_enum(args, "--role", &["owner", "admin", "maintainer", "member"])
+}
+
+fn optional_enum(
+    args: &[String],
+    flag: &str,
+    allowed: &'static [&'static str],
+) -> Result<Option<String>, CliError> {
+    let Some(value) = optional_flag(args, flag) else {
+        return Ok(None);
+    };
+    if allowed.contains(&value.as_str()) {
+        Ok(Some(value))
+    } else {
+        Err(CliError::usage(format!(
+            "{flag} must be one of {}",
+            allowed.join(", ")
+        )))
+    }
+}
+
+fn confirm_destructive(args: &[String], prompt: String) -> Result<(), CliError> {
+    let confirmed = args.iter().any(|value| value == "--yes" || value == "-y")
+        || !io::stdin().is_terminal()
+        || Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .default(false)
+            .interact()
+            .map_err(|err| CliError::io("failed to read confirmation", err))?;
+    if confirmed {
+        Ok(())
+    } else {
+        Err(CliError::Runtime("operation cancelled".to_string()))
+    }
+}
+
+fn print_org(org: &registry::OrgResponse) {
+    println!("id: {}", org.id);
+    println!("name: {}", org.name);
+    if let Some(display_name) = &org.display_name {
+        println!("display: {display_name}");
+    }
+    if let Some(description) = &org.description {
+        println!("description: {description}");
+    }
+    if let Some(owner_id) = &org.owner_id {
+        println!("owner: {owner_id}");
+    }
+    println!("visibility: {}", org.visibility);
+    println!("created: {}", org.created_at);
+}
+
+fn print_team(team: &registry::TeamResponse) {
+    println!("id: {}", team.id);
+    println!("org: {}", team.org);
+    println!("name: {}", team.name);
+    if let Some(description) = &team.description {
+        println!("description: {description}");
+    }
+    println!("visibility: {}", team.visibility);
+    println!("created: {}", team.created_at);
+}
+
+fn print_members(members: Vec<registry::MemberResponse>) {
+    if members.is_empty() {
+        println!("no members found");
+    } else {
+        let rows = members
+            .into_iter()
+            .map(|member| {
+                vec![
+                    member.user.id,
+                    member.user.username,
+                    member.user.email,
+                    member.user.display_name.unwrap_or_default(),
+                    member.user.is_admin.to_string(),
+                    member.role,
+                    member.joined_at,
+                ]
+            })
+            .collect::<Vec<_>>();
+        ui::table(
+            &[
+                "id", "username", "email", "display", "admin", "role", "joined",
+            ],
+            &rows,
+        );
+    }
+}
+
 fn suggest_command(command: &str) -> Option<&'static str> {
     const COMMANDS: &[&str] = &[
         "init",
@@ -416,6 +875,8 @@ fn suggest_command(command: &str) -> Option<&'static str> {
         "lsp",
         "validate",
         "memory",
+        "org",
+        "team",
         "completions",
         "version",
     ];

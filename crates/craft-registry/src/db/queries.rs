@@ -1,13 +1,13 @@
 //! Database queries for the CRAFT Registry
 
 use chrono::{DateTime, Duration, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
     Role, Visibility,
     db::*,
-    error::{Context, RegistryResult},
+    error::{Context, RegistryError, RegistryResult},
 };
 
 // ============================================================================
@@ -42,6 +42,53 @@ pub async fn create_org(
     .fetch_one(pool)
     .await?;
 
+    Ok(org)
+}
+
+/// Create a new organization owned by the given user.
+pub async fn create_owned_org(
+    pool: &PgPool,
+    name: &str,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    visibility: Visibility,
+    owner_id: Uuid,
+) -> RegistryResult<Organization> {
+    let visibility_str = match visibility {
+        Visibility::Public => "public",
+        Visibility::Internal => "internal",
+        Visibility::Private => "private",
+    };
+
+    let mut tx = pool.begin().await?;
+    let org = sqlx::query_as::<_, Organization>(
+        r#"
+        INSERT INTO organizations (name, display_name, description, visibility, owner_id)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        "#,
+    )
+    .bind(name)
+    .bind(display_name)
+    .bind(description)
+    .bind(visibility_str)
+    .bind(owner_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO org_members (org_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+        ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'owner'
+        "#,
+    )
+    .bind(org.id)
+    .bind(owner_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(org)
 }
 
@@ -87,6 +134,24 @@ pub async fn list_orgs(
     )
     .bind(limit)
     .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(orgs)
+}
+
+/// List organizations visible to a user through membership.
+pub async fn list_orgs_for_user(pool: &PgPool, user_id: Uuid) -> RegistryResult<Vec<Organization>> {
+    let orgs = sqlx::query_as::<_, Organization>(
+        r#"
+        SELECT o.*
+        FROM organizations o
+        INNER JOIN org_members om ON om.org_id = o.id
+        WHERE om.user_id = $1 AND o.deleted_at IS NULL
+        ORDER BY o.created_at DESC
+        "#,
+    )
+    .bind(user_id)
     .fetch_all(pool)
     .await?;
 
@@ -163,6 +228,73 @@ pub async fn create_team(
     )
     .bind(org_id)
     .bind(name)
+    .bind(description)
+    .bind(visibility_str)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(team)
+}
+
+/// Create a new team with display metadata.
+pub async fn create_named_team(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    visibility: Visibility,
+) -> RegistryResult<Team> {
+    let visibility_str = match visibility {
+        Visibility::Public => "public",
+        Visibility::Internal => "internal",
+        Visibility::Private => "private",
+    };
+
+    let team = sqlx::query_as::<_, Team>(
+        r#"
+        INSERT INTO teams (org_id, name, display_name, description, visibility)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        "#,
+    )
+    .bind(org_id)
+    .bind(name)
+    .bind(display_name)
+    .bind(description)
+    .bind(visibility_str)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(team)
+}
+
+/// Update team metadata.
+pub async fn update_team(
+    pool: &PgPool,
+    id: Uuid,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    visibility: Option<Visibility>,
+) -> RegistryResult<Team> {
+    let visibility_str = visibility.map(|v| match v {
+        Visibility::Public => "public",
+        Visibility::Internal => "internal",
+        Visibility::Private => "private",
+    });
+
+    let team = sqlx::query_as::<_, Team>(
+        r#"
+        UPDATE teams
+        SET display_name = COALESCE($2, display_name),
+            description = COALESCE($3, description),
+            visibility = COALESCE($4, visibility)
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(display_name)
     .bind(description)
     .bind(visibility_str)
     .fetch_one(pool)
@@ -539,6 +671,7 @@ pub async fn add_org_member(
     role: Role,
 ) -> RegistryResult<OrgMember> {
     let role_str = match role {
+        Role::Owner => "owner",
         Role::Admin => "admin",
         Role::Maintainer => "maintainer",
         Role::Member => "member",
@@ -607,12 +740,31 @@ pub async fn check_org_role(
         (Role::Member, _)
             | (Role::Maintainer, Role::Maintainer)
             | (Role::Maintainer, Role::Admin)
+            | (Role::Maintainer, Role::Owner)
             | (Role::Admin, Role::Admin)
+            | (Role::Admin, Role::Owner)
+            | (Role::Owner, Role::Owner)
     ))
 }
 
 /// Remove member from organization
 pub async fn remove_org_member(pool: &PgPool, org_id: Uuid, user_id: Uuid) -> RegistryResult<()> {
+    let member = get_org_member(pool, org_id, user_id).await?;
+    if member.role() == Role::Owner {
+        let owner_count = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM org_members WHERE org_id = $1 AND role = 'owner'"#,
+        )
+        .bind(org_id)
+        .fetch_one(pool)
+        .await?;
+
+        if owner_count <= 1 {
+            return Err(RegistryError::Validation(
+                "Cannot remove the last organization owner".to_string(),
+            ));
+        }
+    }
+
     sqlx::query(r#"DELETE FROM org_members WHERE org_id = $1 AND user_id = $2"#)
         .bind(org_id)
         .bind(user_id)
@@ -628,7 +780,24 @@ pub async fn list_org_members(
 ) -> RegistryResult<Vec<(OrgMember, User)>> {
     let rows = sqlx::query(
         r#"
-        SELECT om.*, u.* 
+        SELECT
+            om.id AS member_id,
+            om.org_id AS member_org_id,
+            om.user_id AS member_user_id,
+            om.role AS member_role,
+            om.created_at AS member_created_at,
+            om.updated_at AS member_updated_at,
+            u.id AS user_id,
+            u.username AS user_username,
+            u.email AS user_email,
+            u.display_name AS user_display_name,
+            u.avatar_url AS user_avatar_url,
+            u.password_hash AS user_password_hash,
+            u.is_active AS user_is_active,
+            u.is_admin AS user_is_admin,
+            u.created_at AS user_created_at,
+            u.updated_at AS user_updated_at,
+            u.last_login_at AS user_last_login_at
         FROM org_members om
         JOIN users u ON om.user_id = u.id
         WHERE om.org_id = $1
@@ -641,8 +810,27 @@ pub async fn list_org_members(
 
     let mut results = Vec::new();
     for row in rows {
-        let member: OrgMember = sqlx::FromRow::from_row(&row)?;
-        let user: User = sqlx::FromRow::from_row(&row)?;
+        let member = OrgMember {
+            id: row.try_get("member_id")?,
+            org_id: row.try_get("member_org_id")?,
+            user_id: row.try_get("member_user_id")?,
+            role: row.try_get("member_role")?,
+            created_at: row.try_get("member_created_at")?,
+            updated_at: row.try_get("member_updated_at")?,
+        };
+        let user = User {
+            id: row.try_get("user_id")?,
+            username: row.try_get("user_username")?,
+            email: row.try_get("user_email")?,
+            display_name: row.try_get("user_display_name")?,
+            avatar_url: row.try_get("user_avatar_url")?,
+            password_hash: row.try_get("user_password_hash")?,
+            is_active: row.try_get("user_is_active")?,
+            is_admin: row.try_get("user_is_admin")?,
+            created_at: row.try_get("user_created_at")?,
+            updated_at: row.try_get("user_updated_at")?,
+            last_login_at: row.try_get("user_last_login_at")?,
+        };
         results.push((member, user));
     }
 
@@ -661,6 +849,7 @@ pub async fn add_team_member(
     role: Role,
 ) -> RegistryResult<TeamMember> {
     let role_str = match role {
+        Role::Owner => "owner",
         Role::Admin => "admin",
         Role::Maintainer => "maintainer",
         Role::Member => "member",
@@ -718,7 +907,24 @@ pub async fn list_team_members(
 ) -> RegistryResult<Vec<(TeamMember, User)>> {
     let rows = sqlx::query(
         r#"
-        SELECT tm.*, u.* 
+        SELECT
+            tm.id AS member_id,
+            tm.team_id AS member_team_id,
+            tm.user_id AS member_user_id,
+            tm.role AS member_role,
+            tm.created_at AS member_created_at,
+            tm.updated_at AS member_updated_at,
+            u.id AS user_id,
+            u.username AS user_username,
+            u.email AS user_email,
+            u.display_name AS user_display_name,
+            u.avatar_url AS user_avatar_url,
+            u.password_hash AS user_password_hash,
+            u.is_active AS user_is_active,
+            u.is_admin AS user_is_admin,
+            u.created_at AS user_created_at,
+            u.updated_at AS user_updated_at,
+            u.last_login_at AS user_last_login_at
         FROM team_members tm
         JOIN users u ON tm.user_id = u.id
         WHERE tm.team_id = $1
@@ -731,8 +937,27 @@ pub async fn list_team_members(
 
     let mut results = Vec::new();
     for row in rows {
-        let member: TeamMember = sqlx::FromRow::from_row(&row)?;
-        let user: User = sqlx::FromRow::from_row(&row)?;
+        let member = TeamMember {
+            id: row.try_get("member_id")?,
+            team_id: row.try_get("member_team_id")?,
+            user_id: row.try_get("member_user_id")?,
+            role: row.try_get("member_role")?,
+            created_at: row.try_get("member_created_at")?,
+            updated_at: row.try_get("member_updated_at")?,
+        };
+        let user = User {
+            id: row.try_get("user_id")?,
+            username: row.try_get("user_username")?,
+            email: row.try_get("user_email")?,
+            display_name: row.try_get("user_display_name")?,
+            avatar_url: row.try_get("user_avatar_url")?,
+            password_hash: row.try_get("user_password_hash")?,
+            is_active: row.try_get("user_is_active")?,
+            is_admin: row.try_get("user_is_admin")?,
+            created_at: row.try_get("user_created_at")?,
+            updated_at: row.try_get("user_updated_at")?,
+            last_login_at: row.try_get("user_last_login_at")?,
+        };
         results.push((member, user));
     }
 
