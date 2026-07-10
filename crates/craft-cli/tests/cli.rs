@@ -99,6 +99,24 @@ fn harness_list_handles_empty_registry() {
 }
 
 #[test]
+fn harness_publish_is_a_supported_publish_entrypoint() {
+    let output = Command::new(env!("CARGO_BIN_EXE_craft"))
+        .args(["harness", "publish", "--help"])
+        .output()
+        .unwrap_or_else(|err| panic!("{err}"));
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("usage: craft publish [--registry <url>] [--org <org>]")
+    );
+}
+
+#[test]
 fn compose_command_writes_compose_file() {
     let root = temp_root("craft-cli-compose");
     let craft_home = root.join(".craft");

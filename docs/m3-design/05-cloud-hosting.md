@@ -682,6 +682,7 @@ craft-harness-1.0.0.tar.gz
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| POST | `/packages` | Authenticated one-step package publish; creates the harness when needed |
 | GET | `/harnesses` | Search harnesss |
 | POST | `/harnesses` | Create harness |
 | GET | `/harnesses/{org}/{name}` | Get harness details |

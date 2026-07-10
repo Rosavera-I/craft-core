@@ -212,6 +212,100 @@ pub struct VersionResponse {
     pub published_at: String,
 }
 
+/// Publish a package in one authenticated request.
+///
+/// This is the package-manager-facing equivalent of creating a harness and
+/// then publishing one of its versions. Multipart fields are `org`, `name`,
+/// `version`, and `package`; `description`, `visibility`, and checksum or git
+/// metadata are optional. The authenticated caller must be an organization
+/// maintainer (or registry administrator).
+pub async fn publish_package_handler(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    mut multipart: Multipart,
+) -> RegistryResult<Json<VersionResponse>> {
+    let mut org_name = None;
+    let mut harness_name = None;
+    let mut version_str = None;
+    let mut description = None;
+    let mut visibility = None;
+    let mut expected_sha256 = None;
+    let mut package_data = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        let name = field.name().unwrap_or("").to_string();
+        let data = field.bytes().await?;
+        match name.as_str() {
+            "org" => org_name = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "name" => harness_name = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "version" => version_str = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "description" => description = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "visibility" => visibility = Some(String::from_utf8_lossy(&data).trim().to_string()),
+            "content_sha256" | "sha256" => {
+                expected_sha256 = Some(String::from_utf8_lossy(&data).trim().to_string())
+            }
+            "package" => package_data = Some(data.to_vec()),
+            _ => {}
+        }
+    }
+
+    let org_name = required_package_field("org", org_name)?;
+    let harness_name = required_package_field("name", harness_name)?;
+    let version_str = required_package_field("version", version_str)?;
+    if !is_package_identifier(&org_name) || !is_package_identifier(&harness_name) {
+        return Err(RegistryError::Validation(
+            "org and name must contain only letters, numbers, hyphen, or underscore".to_string(),
+        ));
+    }
+    let package_data = package_data
+        .ok_or_else(|| RegistryError::Validation("Package file required".to_string()))?;
+
+    let org = get_org_by_name(state.db.pool(), &org_name).await?;
+    require_publish_access(&state, &auth_user, org.id).await?;
+    let harness = match get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await {
+        Ok(harness) => harness,
+        Err(RegistryError::NotFound(_)) => {
+            let visibility = match visibility.as_deref() {
+                Some("public") => Visibility::Public,
+                Some("internal") => Visibility::Internal,
+                Some("private") | None => Visibility::Private,
+                Some(value) => {
+                    return Err(RegistryError::Validation(format!(
+                        "invalid package visibility `{value}`"
+                    )));
+                }
+            };
+            create_harness(
+                state.db.pool(),
+                org.id,
+                None,
+                &harness_name,
+                description.as_deref(),
+                visibility,
+                None,
+                None,
+            )
+            .await?
+        }
+        Err(error) => return Err(error),
+    };
+
+    let version = store_published_package(
+        &state,
+        auth_user.user_id,
+        &org_name,
+        &harness_name,
+        harness.id,
+        &version_str,
+        description.as_deref(),
+        expected_sha256.as_deref(),
+        package_data,
+    )
+    .await?;
+
+    Ok(Json(version.into()))
+}
+
 #[derive(Debug, Deserialize)]
 struct PublishMetadata {
     version: Option<String>,
@@ -414,6 +508,87 @@ pub async fn publish_version_handler(
     .await?;
 
     Ok(Json(version.into()))
+}
+
+fn required_package_field(
+    field: &str,
+    value: Option<String>,
+) -> RegistryResult<String> {
+    value
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RegistryError::Validation(format!("{field} field required")))
+}
+
+fn is_package_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+}
+
+async fn require_publish_access(
+    state: &AppState,
+    auth_user: &AuthUser,
+    org_id: uuid::Uuid,
+) -> RegistryResult<()> {
+    let can_publish = check_org_role(
+        state.db.pool(),
+        org_id,
+        auth_user.user_id,
+        crate::Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
+    if auth_user.is_admin || can_publish {
+        Ok(())
+    } else {
+        Err(RegistryError::Auth(
+            "Maintainer access required".to_string(),
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn store_published_package(
+    state: &AppState,
+    published_by: uuid::Uuid,
+    org_name: &str,
+    harness_name: &str,
+    harness_id: uuid::Uuid,
+    version_str: &str,
+    description: Option<&str>,
+    expected_sha256: Option<&str>,
+    package_data: Vec<u8>,
+) -> RegistryResult<HarnessVersion> {
+    let semver_version = version_str.parse().map_err(RegistryError::Version)?;
+    let content_sha256 = compute_sha256(&package_data);
+    if let Some(expected_sha256) = expected_sha256
+        && expected_sha256 != content_sha256
+    {
+        return Err(RegistryError::Package(format!(
+            "Checksum mismatch: expected {expected_sha256}, got {content_sha256}"
+        )));
+    }
+    validate_package_manifest(&package_data, harness_name, version_str)?;
+
+    let storage = create_storage(&state.config.storage)?;
+    let storage_path = storage
+        .store(org_name, harness_name, version_str, &package_data)
+        .await?;
+    create_harness_version(
+        state.db.pool(),
+        harness_id,
+        &semver_version,
+        None,
+        None,
+        description,
+        None,
+        package_data.len() as i64,
+        &content_sha256,
+        &storage_path,
+        published_by,
+    )
+    .await
 }
 
 /// Yank version request

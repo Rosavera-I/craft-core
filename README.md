@@ -77,6 +77,24 @@ Run validators for an installed harness:
 craft harness test godot-designer
 ```
 
+### Registry packages
+
+After authenticating with `craft login`, publish the current validated harness and
+install a package from the configured registry:
+
+```sh
+craft harness publish --org acme
+craft harness install acme/godot-designer       # highest non-yanked semver
+craft harness install acme/godot-designer@1.2.3 # exact version
+craft harness install acme/godot-designer@^1.2  # highest compatible version
+```
+
+`craft publish` and `craft install` remain short aliases. A successful registry
+install verifies the server-provided SHA-256 before extraction, records the local
+installation in `CRAFT_HOME`, and atomically writes or updates `craft.lock` in the
+current project. The lockfile stores the resolved exact version, registry source,
+and archive checksum so ranges remain reproducible.
+
 Validation first checks `craft.toml` and referenced artifacts. If `validators/checks.tdd` contains non-comment checks, CRAFT runs `tdd-dsl` from `PATH`; if that binary is not available, it tries `python -m tdd_dsl`.
 
 Compose multiple installed harnesses into a generated config:

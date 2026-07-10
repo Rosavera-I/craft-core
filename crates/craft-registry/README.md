@@ -21,6 +21,7 @@ This crate provides a complete cloud-based registry solution for the CRAFT proje
 
 ### Package Management
 - Harness publishing with Git refs
+- Authenticated `POST /api/v1/packages` for one-step multipart package publishing
 - Semantic version support with semver matching
 - Content-addressed storage (SHA-256)
 - Version yanking and unyanking

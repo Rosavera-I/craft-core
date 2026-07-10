@@ -15,6 +15,7 @@ use craft_memory::{Memory, MemoryError, MemoryScope};
 use craft_registry::RegistryError;
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tar::{Archive, Builder};
 
@@ -22,6 +23,28 @@ mod registry;
 mod ui;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const LOCKFILE_NAME: &str = "craft.lock";
+const LOCKFILE_VERSION: u32 = 1;
+
+/// The project-local record of registry versions selected by `craft harness install`.
+///
+/// This file deliberately stores only immutable registry coordinates and the archive
+/// digest. Local installation paths are machine-specific and remain in `CRAFT_HOME`.
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct HarnessLockfile {
+    version: u32,
+    #[serde(default)]
+    harness: Vec<LockedHarness>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct LockedHarness {
+    org: String,
+    name: String,
+    version: String,
+    source: String,
+    checksum: String,
+}
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -229,6 +252,7 @@ Usage:
   craft doctor           Check local development environment
   craft publish [--registry <url>] [--org <org>]
   craft install <org>/<name>[@version]
+  craft harness publish [--registry <url>] [--org <org>]
   craft harness install <org>/<name>[@version]
   craft harness install github:owner/repo[@ref]
   craft harness list
@@ -307,6 +331,11 @@ fn completion_command() -> Command {
         .subcommand(Command::new("install").arg(Arg::new("source").required(true)))
         .subcommand(
             Command::new("harness")
+                .subcommand(
+                    Command::new("publish")
+                        .arg(Arg::new("registry").long("registry").value_name("URL"))
+                        .arg(Arg::new("org").long("org").value_name("ORG")),
+                )
                 .subcommand(Command::new("install").arg(Arg::new("source").required(true)))
                 .subcommand(Command::new("list"))
                 .subcommand(Command::new("info").arg(Arg::new("name").required(true)))
@@ -1094,25 +1123,7 @@ fn publish_command(args: &[String]) -> Result<(), CliError> {
     let description = manifest.harness.description.clone();
 
     let spinner = ui::spinner(format!("publishing {org}/{name}@{version}"));
-    match registry::block_on(registry.get_harness(&org, &name)) {
-        Ok(_) => {}
-        Err(RegistryError::NotFound(_)) => {
-            registry::block_on(registry.create_harness(
-                &org,
-                &registry::CreateHarnessRequest {
-                    name: &name,
-                    description: Some(&description),
-                    visibility: Some("private"),
-                    keywords: None,
-                    team: None,
-                    git_repository_url: None,
-                },
-            ))?;
-        }
-        Err(error) => return Err(error.into()),
-    }
-
-    let published = registry::block_on(registry.publish_harness(
+    let published = registry::block_on(registry.publish_package(
         &org,
         &name,
         &version,
@@ -1133,6 +1144,7 @@ fn publish_command(args: &[String]) -> Result<(), CliError> {
 fn harness_command(args: &[String]) -> Result<(), CliError> {
     let manager = HarnessManager::new(CraftHome::from_env()?);
     match args.first().map(String::as_str) {
+        Some("publish") => publish_command(&args[1..]),
         Some("install") => {
             let source = args.get(1).ok_or_else(|| {
                 CliError::usage(
@@ -1213,7 +1225,7 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
             Ok(())
         }
         _ => Err(CliError::usage(
-            "usage: craft harness <install|list|info|test|uninstall>",
+            "usage: craft harness <publish|install|list|info|test|uninstall>",
         )),
     }
 }
@@ -1321,6 +1333,16 @@ fn install_registry_harness(manager: &HarnessManager, source: &str) -> Result<()
         path: target,
     };
     manager.registry()?.upsert(&installed)?;
+    update_registry_lockfile(
+        Path::new(LOCKFILE_NAME),
+        LockedHarness {
+            org: org.clone(),
+            name: name.clone(),
+            version: version.version.clone(),
+            source: format!("registry:{org}/{name}"),
+            checksum: version.content_sha256.clone(),
+        },
+    )?;
     ui::finish_spinner(spinner, format!("installed {name} {}", version.version));
     ui::success(format!(
         "installed {} {} from {}",
@@ -1422,6 +1444,60 @@ fn unpack_harness_archive(package: &[u8], target: &Path) -> Result<(), CliError>
     archive
         .unpack(target)
         .map_err(|err| CliError::io(format!("failed to extract into {}", target.display()), err))
+}
+
+fn update_registry_lockfile(path: &Path, locked: LockedHarness) -> Result<(), CliError> {
+    let mut lockfile = if path.exists() {
+        let contents = fs::read_to_string(path)
+            .map_err(|err| CliError::io(format!("failed to read {}", path.display()), err))?;
+        toml::from_str::<HarnessLockfile>(&contents)
+            .map_err(|err| CliError::Runtime(format!("invalid {}: {err}", path.display())))?
+    } else {
+        HarnessLockfile {
+            version: LOCKFILE_VERSION,
+            harness: Vec::new(),
+        }
+    };
+
+    if lockfile.version != LOCKFILE_VERSION {
+        return Err(CliError::Runtime(format!(
+            "unsupported {} format version {}; expected {LOCKFILE_VERSION}",
+            path.display(),
+            lockfile.version
+        )));
+    }
+
+    if let Some(existing) = lockfile
+        .harness
+        .iter_mut()
+        .find(|entry| entry.org == locked.org && entry.name == locked.name)
+    {
+        *existing = locked;
+    } else {
+        lockfile.harness.push(locked);
+    }
+    lockfile
+        .harness
+        .sort_by(|left, right| (&left.org, &left.name).cmp(&(&right.org, &right.name)));
+
+    let contents = toml::to_string_pretty(&lockfile).map_err(|err| {
+        CliError::Runtime(format!("failed to serialize {}: {err}", path.display()))
+    })?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temp = tempfile::NamedTempFile::new_in(parent).map_err(|err| {
+        CliError::io(
+            format!(
+                "failed to create temporary lockfile in {}",
+                parent.display()
+            ),
+            err,
+        )
+    })?;
+    fs::write(temp.path(), contents)
+        .map_err(|err| CliError::io("failed to write temporary lockfile", err))?;
+    temp.persist(path)
+        .map_err(|err| CliError::io(format!("failed to replace {}", path.display()), err.error))?;
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1861,5 +1937,63 @@ fn probe_version(binary: &str, arg: &str) -> String {
         }
         Ok(_) => "found, but version check failed".to_string(),
         Err(_) => "not found".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locked(org: &str, name: &str, version: &str) -> LockedHarness {
+        LockedHarness {
+            org: org.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            source: format!("registry:{org}/{name}"),
+            checksum: format!("checksum-{version}"),
+        }
+    }
+
+    #[test]
+    fn registry_source_parses_latest_exact_and_semver_requirements() {
+        let latest = parse_registry_source("acme/designer").unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(latest, ("acme".to_string(), "designer".to_string(), None));
+
+        let exact = parse_registry_source("registry:acme/designer@1.2.3")
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            exact,
+            (
+                "acme".to_string(),
+                "designer".to_string(),
+                Some("1.2.3".to_string())
+            )
+        );
+
+        let requirement =
+            parse_registry_source("acme/designer@^1.2").unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(requirement.2, Some("^1.2".to_string()));
+    }
+
+    #[test]
+    fn registry_lockfile_is_sorted_and_replaces_a_resolved_harness() {
+        let directory = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let path = directory.path().join(LOCKFILE_NAME);
+
+        update_registry_lockfile(&path, locked("zeta", "designer", "1.0.0"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        update_registry_lockfile(&path, locked("acme", "architect", "2.0.0"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        update_registry_lockfile(&path, locked("zeta", "designer", "1.1.0"))
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        let contents = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{err}"));
+        let parsed: HarnessLockfile =
+            toml::from_str(&contents).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(parsed.version, LOCKFILE_VERSION);
+        assert_eq!(parsed.harness.len(), 2);
+        assert_eq!(parsed.harness[0].org, "acme");
+        assert_eq!(parsed.harness[1].version, "1.1.0");
+        assert_eq!(parsed.harness[1].checksum, "checksum-1.1.0");
     }
 }

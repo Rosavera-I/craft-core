@@ -153,7 +153,7 @@ pub use team::{
 
 pub use harness::{
     create_harness_handler, delete_harness_handler, download_version_handler, get_harness_handler,
-    get_version_handler, list_harness_versions_handler, publish_version_handler,
+    get_version_handler, list_harness_versions_handler, publish_package_handler, publish_version_handler,
     search_harnesses, update_harness_handler, yank_version_handler, unyank_version_handler,
 };
 

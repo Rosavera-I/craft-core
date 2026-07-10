@@ -429,6 +429,34 @@ impl CloudRegistry {
             .await
     }
 
+    /// Publish a complete harness package, creating its registry record when
+    /// needed. This is the package-manager API used by `craft harness publish`.
+    pub async fn publish_package(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        description: Option<&str>,
+        package: Vec<u8>,
+    ) -> RegistryResult<VersionResponse> {
+        let package_part = reqwest::multipart::Part::bytes(package)
+            .file_name(format!("{org}-{name}-{version}.tar.gz"))
+            .mime_str("application/gzip")
+            .map_err(|err| {
+                RegistryError::Validation(format!("invalid package MIME type: {err}"))
+            })?;
+        let mut form = reqwest::multipart::Form::new()
+            .text("org", org.to_string())
+            .text("name", name.to_string())
+            .text("version", version.to_string())
+            .part("package", package_part);
+        if let Some(description) = description {
+            form = form.text("description", description.to_string());
+        }
+
+        self.client.post_multipart("/api/v1/packages", form).await
+    }
+
     pub async fn download_harness(
         &self,
         org: &str,
