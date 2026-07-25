@@ -19,6 +19,7 @@ pub mod cli;
 pub mod db;
 pub mod error;
 pub mod git;
+pub mod server;
 pub mod storage;
 pub mod version;
 

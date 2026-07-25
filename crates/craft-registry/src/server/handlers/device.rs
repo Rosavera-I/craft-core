@@ -1,10 +1,10 @@
 //! OAuth device authorization request handlers
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
-    Json,
 };
 use chrono::{Duration, Utc};
 use rand::Rng;
@@ -129,7 +129,7 @@ pub async fn initiate_device_auth(
     Ok(Json(DeviceAuthorizationResponse {
         device_code,
         user_code: user_code.clone(),
-        verification_uri: github_authorization_uri(&state.config, &user_code)?,
+        verification_uri: github_authorization_uri(&state, &user_code)?,
         expires_in: DEVICE_AUTH_EXPIRY_SECS,
         interval: DEVICE_AUTH_INTERVAL_SECS,
     }))
@@ -254,7 +254,9 @@ fn github_authorization_uri(state: &AppState, user_code: &str) -> RegistryResult
         .config
         .github_oauth_client_id
         .as_deref()
-        .ok_or_else(|| RegistryError::Config("GitHub OAuth client ID is not configured".to_string()))?;
+        .ok_or_else(|| {
+            RegistryError::Config("GitHub OAuth client ID is not configured".to_string())
+        })?;
 
     let mut url = Url::parse("https://github.com/login/oauth/authorize")
         .map_err(|e| RegistryError::Config(format!("invalid GitHub authorize URL: {}", e)))?;
@@ -280,12 +282,16 @@ async fn exchange_github_code(state: &AppState, code: &str) -> RegistryResult<St
         .config
         .github_oauth_client_id
         .as_deref()
-        .ok_or_else(|| RegistryError::Config("GitHub OAuth client ID is not configured".to_string()))?;
+        .ok_or_else(|| {
+            RegistryError::Config("GitHub OAuth client ID is not configured".to_string())
+        })?;
     let client_secret = state
         .config
         .github_oauth_client_secret
         .as_deref()
-        .ok_or_else(|| RegistryError::Config("GitHub OAuth client secret is not configured".to_string()))?;
+        .ok_or_else(|| {
+            RegistryError::Config("GitHub OAuth client secret is not configured".to_string())
+        })?;
 
     let client = reqwest::Client::new();
     let response = client
@@ -334,13 +340,15 @@ async fn fetch_primary_github_email(access_token: &str) -> RegistryResult<String
         .into_iter()
         .find(|email| email.primary && email.verified)
         .map(|email| email.email)
-        .ok_or_else(|| RegistryError::Auth("GitHub account has no verified primary email".to_string()))
+        .ok_or_else(|| {
+            RegistryError::Auth("GitHub account has no verified primary email".to_string())
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::Database, RegistryConfig, StorageConfig};
+    use crate::{RegistryConfig, StorageConfig, db::Database};
     use sqlx::postgres::PgPoolOptions;
 
     fn test_state(config: RegistryConfig) -> RegistryResult<AppState> {
@@ -385,21 +393,26 @@ mod tests {
         })?;
 
         let uri = github_authorization_uri(&state, "ABCD1234")?;
-        let parsed =
-            Url::parse(&uri).map_err(|err| RegistryError::Validation(err.to_string()))?;
+        let parsed = Url::parse(&uri).map_err(|err| RegistryError::Validation(err.to_string()))?;
         let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
 
         assert_eq!(
             parsed.as_str().split('?').next(),
             Some("https://github.com/login/oauth/authorize")
         );
-        assert_eq!(params.get("client_id").map(String::as_str), Some("client-123"));
+        assert_eq!(
+            params.get("client_id").map(String::as_str),
+            Some("client-123")
+        );
         assert_eq!(params.get("state").map(String::as_str), Some("ABCD1234"));
         assert_eq!(
             params.get("redirect_uri").map(String::as_str),
             Some("https://registry.example.com/oauth/callback")
         );
-        assert_eq!(params.get("scope").map(String::as_str), Some("read:user user:email"));
+        assert_eq!(
+            params.get("scope").map(String::as_str),
+            Some("read:user user:email")
+        );
         Ok(())
     }
 
@@ -409,7 +422,9 @@ mod tests {
 
         let error = github_authorization_uri(&state, "ABCD1234")
             .err()
-            .ok_or_else(|| RegistryError::Internal("expected missing client id error".to_string()))?;
+            .ok_or_else(|| {
+                RegistryError::Internal("expected missing client id error".to_string())
+            })?;
 
         assert!(matches!(error, RegistryError::Config(_)));
         Ok(())

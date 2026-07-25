@@ -1,19 +1,19 @@
 //! Team request handlers
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
+    Role, Visibility,
     auth::AuthUser,
     db::*,
     error::{RegistryError, RegistryResult},
-    server::{handlers::UserResponse, AppState},
-    Role, Visibility,
+    server::{AppState, handlers::UserResponse},
 };
 
 /// Create team request
@@ -74,7 +74,13 @@ pub async fn create_team_handler(
     )
     .await?;
 
-    add_team_member(state.db.pool(), team.id, auth_user.user_id, Role::Maintainer).await?;
+    add_team_member(
+        state.db.pool(),
+        team.id,
+        auth_user.user_id,
+        Role::Maintainer,
+    )
+    .await?;
 
     Ok(Json(TeamResponse {
         id: team.id.to_string(),
@@ -172,10 +178,14 @@ pub async fn update_team_handler(
     let team = get_team_by_org_and_name(state.db.pool(), org.id, &team_name).await?;
 
     // Check permissions
-    let is_team_maintainer =
-        check_team_role(state.db.pool(), team.id, auth_user.user_id, Role::Maintainer)
-            .await
-            .unwrap_or(false);
+    let is_team_maintainer = check_team_role(
+        state.db.pool(),
+        team.id,
+        auth_user.user_id,
+        Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
     let is_org_admin = check_org_role(state.db.pool(), org.id, auth_user.user_id, Role::Admin)
         .await
         .unwrap_or(false);
@@ -296,9 +306,14 @@ pub async fn invite_team_member(
     let team = get_team_by_org_and_name(state.db.pool(), org.id, &team_name).await?;
 
     // Check permissions (team maintainer or above)
-    let can_invite = check_team_role(state.db.pool(), team.id, auth_user.user_id, Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_invite = check_team_role(
+        state.db.pool(),
+        team.id,
+        auth_user.user_id,
+        Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     let is_org_admin = check_org_role(state.db.pool(), org.id, auth_user.user_id, Role::Admin)
         .await
@@ -345,9 +360,14 @@ pub async fn remove_team_member(
     let is_self = user_id == auth_user.user_id;
 
     // Check permissions
-    let can_remove = check_team_role(state.db.pool(), team.id, auth_user.user_id, Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_remove = check_team_role(
+        state.db.pool(),
+        team.id,
+        auth_user.user_id,
+        Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     let is_org_admin = check_org_role(state.db.pool(), org.id, auth_user.user_id, Role::Admin)
         .await

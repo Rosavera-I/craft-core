@@ -87,6 +87,12 @@ pub enum RegistryError {
     NotImplemented(String),
 }
 
+impl From<axum::extract::multipart::MultipartError> for RegistryError {
+    fn from(error: axum::extract::multipart::MultipartError) -> Self {
+        Self::Validation(error.to_string())
+    }
+}
+
 impl RegistryError {
     /// Get the HTTP status code for this error
     pub fn status_code(&self) -> StatusCode {

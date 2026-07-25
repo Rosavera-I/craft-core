@@ -1,19 +1,19 @@
 //! Organization request handlers
 
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
+    Role, Visibility,
     auth::AuthUser,
     db::*,
     error::{RegistryError, RegistryResult},
     server::{AppState, PaginationParams},
-    Role, Visibility,
 };
 
 /// Create organization request

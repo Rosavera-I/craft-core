@@ -6,11 +6,22 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub harness: Harness,
+    pub package: PackageMetadata,
+    pub dependencies: BTreeMap<String, String>,
+    pub entry_points: BTreeMap<String, PathBuf>,
     pub model: Model,
     pub prompts: Prompts,
     pub memory: Memory,
     pub tools: Tools,
     pub validators: Validators,
+}
+
+/// Optional distribution metadata carried with a published harness package.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageMetadata {
+    pub license: Option<String>,
+    pub repository: Option<String>,
+    pub keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +105,16 @@ pub fn parse_manifest(input: &str) -> Result<Manifest, ManifestError> {
             description: required_string(&table, "harness", "description")?,
             authors: required_array(&table, "harness", "authors")?,
         },
+        package: PackageMetadata {
+            license: optional_string(&table, "package", "license")?,
+            repository: optional_string(&table, "package", "repository")?,
+            keywords: optional_array(&table, "package", "keywords")?.unwrap_or_default(),
+        },
+        dependencies: string_table(&table, "dependencies")?,
+        entry_points: string_table(&table, "entrypoints")?
+            .into_iter()
+            .map(|(name, path)| (name, PathBuf::from(path)))
+            .collect(),
         model: Model {
             min_context: required_u32(&table, "model", "min_context")?,
             recommended: required_array(&table, "model", "recommended")?,
@@ -113,6 +134,18 @@ pub fn parse_manifest(input: &str) -> Result<Manifest, ManifestError> {
     };
 
     validate_semver(&manifest.harness.version)?;
+    for (dependency, requirement) in &manifest.dependencies {
+        validate_dependency_name(dependency)?;
+        semver::VersionReq::parse(requirement).map_err(|err| {
+            ManifestError::InvalidValue(format!(
+                "invalid version requirement `{requirement}` for dependency `{dependency}`: {err}"
+            ))
+        })?;
+    }
+    for (name, path) in &manifest.entry_points {
+        validate_non_empty("entrypoints name", name)?;
+        validate_package_path(path)?;
+    }
     Ok(manifest)
 }
 
@@ -138,12 +171,20 @@ impl Manifest {
             ));
         }
 
+        for relative_path in self.entry_points.values() {
+            let full_path = base_dir.join(relative_path);
+            if !full_path.is_file() {
+                return Err(ManifestError::MissingPath(full_path));
+            }
+        }
+
         for relative_path in [
             &self.prompts.system,
             &self.memory.schema,
             &self.tools.mcp,
             &self.validators.tdd,
         ] {
+            validate_package_path(relative_path)?;
             let full_path = base_dir.join(relative_path);
             if !full_path.exists() {
                 return Err(ManifestError::MissingPath(full_path));
@@ -228,6 +269,67 @@ fn required_array(
     })
 }
 
+fn optional_string(
+    tables: &TableMap,
+    section: &str,
+    key: &str,
+) -> Result<Option<String>, ManifestError> {
+    tables
+        .get(section)
+        .and_then(|fields| fields.get(key))
+        .map(|value| {
+            parse_string(value).ok_or_else(|| {
+                ManifestError::Parse(format!("`{section}.{key}` must be a quoted string"))
+            })
+        })
+        .transpose()
+}
+
+fn optional_array(
+    tables: &TableMap,
+    section: &str,
+    key: &str,
+) -> Result<Option<Vec<String>>, ManifestError> {
+    tables
+        .get(section)
+        .and_then(|fields| fields.get(key))
+        .map(|value| {
+            parse_array(value).ok_or_else(|| {
+                ManifestError::Parse(format!(
+                    "`{section}.{key}` must be an array of quoted strings"
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn string_table(
+    tables: &TableMap,
+    section: &str,
+) -> Result<BTreeMap<String, String>, ManifestError> {
+    tables
+        .get(section)
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    parse_string(value)
+                        .map(|value| (parse_table_key(key), value))
+                        .ok_or_else(|| {
+                            ManifestError::Parse(format!(
+                                "`{section}.{key}` must be a quoted string"
+                            ))
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| Ok(BTreeMap::new()))
+}
+
+fn parse_table_key(key: &str) -> String {
+    parse_string(key).unwrap_or_else(|| key.to_string())
+}
+
 fn required_u32(
     tables: &TableMap,
     section: &'static str,
@@ -308,6 +410,50 @@ fn validate_name(name: &str) -> Result<(), ManifestError> {
     }
 }
 
+fn validate_dependency_name(name: &str) -> Result<(), ManifestError> {
+    let Some((org, harness)) = name.split_once('/') else {
+        return Err(ManifestError::InvalidValue(format!(
+            "dependency `{name}` must use org/name coordinates"
+        )));
+    };
+    if [org, harness].iter().all(|part| {
+        !part.is_empty()
+            && part.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || character == '-'
+                    || character == '_'
+            })
+    }) {
+        Ok(())
+    } else {
+        Err(ManifestError::InvalidValue(format!(
+            "dependency `{name}` contains an invalid package coordinate"
+        )))
+    }
+}
+
+fn validate_package_path(path: &Path) -> Result<(), ManifestError> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        Err(ManifestError::InvalidValue(format!(
+            "package path `{}` must be relative and stay within the package",
+            path.display()
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_non_empty(field: &str, value: &str) -> Result<(), ManifestError> {
     if value.trim().is_empty() {
         Err(ManifestError::InvalidValue(format!(
@@ -334,6 +480,17 @@ version = "0.1.0"
 description = "Godot 4 expertise harness"
 authors = ["JMoak"]
 
+[package]
+license = "MIT"
+repository = "https://example.com/godot-designer"
+keywords = ["godot", "design"]
+
+[dependencies]
+"acme/tdd-architect" = "^1.2.0"
+
+[entrypoints]
+system = "prompts/system.md"
+
 [model]
 min_context = 4096
 recommended = ["llama3.1:8b", "qwen2.5:7b"]
@@ -358,6 +515,18 @@ tdd = "validators/checks.tdd"
         assert_eq!(manifest.harness.name, "godot-designer");
         assert_eq!(manifest.harness.version, "0.1.0");
         assert_eq!(manifest.model.min_context, 4096);
+        assert_eq!(manifest.package.license.as_deref(), Some("MIT"));
+        assert_eq!(
+            manifest
+                .dependencies
+                .get("acme/tdd-architect")
+                .map(String::as_str),
+            Some("^1.2.0")
+        );
+        assert_eq!(
+            manifest.entry_points.get("system"),
+            Some(&PathBuf::from("prompts/system.md"))
+        );
         assert_eq!(
             manifest.model.recommended,
             vec!["llama3.1:8b".to_string(), "qwen2.5:7b".to_string()]
@@ -384,6 +553,31 @@ tdd = "validators/checks.tdd"
         };
 
         assert_eq!(error, ManifestError::InvalidSemver("first".to_string()));
+    }
+
+    #[test]
+    fn rejects_invalid_dependency_requirement() {
+        let input = VALID_MANIFEST.replace("^1.2.0", "definitely-not-semver");
+        let error = match parse_manifest(&input) {
+            Ok(_) => panic!("invalid dependency requirement should fail validation"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("invalid version requirement"));
+    }
+
+    #[test]
+    fn rejects_entrypoint_outside_package() {
+        let input = VALID_MANIFEST.replace(
+            "system = \"prompts/system.md\"",
+            "system = \"../outside.md\"",
+        );
+        let error = match parse_manifest(&input) {
+            Ok(_) => panic!("path traversal should fail validation"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("stay within the package"));
     }
 
     #[test]

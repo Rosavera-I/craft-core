@@ -1,10 +1,10 @@
 //! Harness and version request handlers
 
 use axum::{
-    extract::{Multipart, Path, Query, State},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{Multipart, Path, Query, State},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
@@ -13,12 +13,13 @@ use std::sync::Arc;
 use tar::Archive;
 
 use crate::{
+    Visibility,
     auth::AuthUser,
+    db::search_harnesses as search_harnesses_db,
     db::*,
     error::{RegistryError, RegistryResult},
     server::AppState,
     storage::{compute_sha256, create_storage},
-    Visibility,
 };
 
 /// Create harness request
@@ -56,9 +57,14 @@ pub async fn create_harness_handler(
     let org = get_org_by_name(state.db.pool(), &org_name).await?;
 
     // Check permissions (must be org maintainer or higher)
-    let can_create = check_org_role(state.db.pool(), org.id, auth_user.user_id, crate::Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_create = check_org_role(
+        state.db.pool(),
+        org.id,
+        auth_user.user_id,
+        crate::Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     if !auth_user.is_admin && !can_create {
         return Err(RegistryError::Auth(
@@ -108,10 +114,12 @@ pub async fn create_harness_handler(
 /// Get harness handler
 pub async fn get_harness_handler(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path((org_name, harness_name)): Path<(String, String)>,
 ) -> RegistryResult<Json<HarnessResponse>> {
     let org = get_org_by_name(state.db.pool(), &org_name).await?;
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
+    require_read_access(&state, &auth_user, org.id, &harness.visibility).await?;
 
     Ok(Json(HarnessResponse {
         id: harness.id.to_string(),
@@ -146,9 +154,14 @@ pub async fn update_harness_handler(
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
 
     // Check permissions
-    let can_update = check_org_role(state.db.pool(), org.id, auth_user.user_id, crate::Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_update = check_org_role(
+        state.db.pool(),
+        org.id,
+        auth_user.user_id,
+        crate::Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     if !auth_user.is_admin && !can_update {
         return Err(RegistryError::Auth(
@@ -179,14 +192,17 @@ pub async fn delete_harness_handler(
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
 
     // Check permissions
-    let can_delete = check_org_role(state.db.pool(), org.id, auth_user.user_id, crate::Role::Admin)
-        .await
-        .unwrap_or(false);
+    let can_delete = check_org_role(
+        state.db.pool(),
+        org.id,
+        auth_user.user_id,
+        crate::Role::Admin,
+    )
+    .await
+    .unwrap_or(false);
 
     if !auth_user.is_admin && !can_delete {
-        return Err(RegistryError::Auth(
-            "Admin access required".to_string(),
-        ));
+        return Err(RegistryError::Auth("Admin access required".to_string()));
     }
 
     delete_harness(state.db.pool(), harness.id).await?;
@@ -259,6 +275,7 @@ pub async fn publish_package_handler(
     }
     let package_data = package_data
         .ok_or_else(|| RegistryError::Validation("Package file required".to_string()))?;
+    validate_package_size(&package_data, state.config.max_package_size)?;
 
     let org = get_org_by_name(state.db.pool(), &org_name).await?;
     require_publish_access(&state, &auth_user, org.id).await?;
@@ -339,10 +356,12 @@ impl From<HarnessVersion> for VersionResponse {
 /// List harness versions
 pub async fn list_harness_versions_handler(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path((org_name, harness_name)): Path<(String, String)>,
 ) -> RegistryResult<Json<Vec<VersionResponse>>> {
     let org = get_org_by_name(state.db.pool(), &org_name).await?;
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
+    require_read_access(&state, &auth_user, org.id, &harness.visibility).await?;
     let versions = list_harness_versions(state.db.pool(), harness.id).await?;
 
     Ok(Json(versions.into_iter().map(Into::into).collect()))
@@ -351,10 +370,12 @@ pub async fn list_harness_versions_handler(
 /// Get specific version
 pub async fn get_version_handler(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path((org_name, harness_name, version)): Path<(String, String, String)>,
 ) -> RegistryResult<Json<VersionResponse>> {
     let org = get_org_by_name(state.db.pool(), &org_name).await?;
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
+    require_read_access(&state, &auth_user, org.id, &harness.visibility).await?;
     let version = get_harness_version(state.db.pool(), harness.id, &version).await?;
 
     Ok(Json(version.into()))
@@ -408,9 +429,14 @@ pub async fn publish_version_handler(
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
 
     // Check permissions
-    let can_publish = check_org_role(state.db.pool(), org.id, auth_user.user_id, crate::Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_publish = check_org_role(
+        state.db.pool(),
+        org.id,
+        auth_user.user_id,
+        crate::Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     if !auth_user.is_admin && !can_publish {
         return Err(RegistryError::Auth(
@@ -441,9 +467,7 @@ pub async fn publish_version_handler(
             "git_commit_sha" => {
                 git_commit_sha = Some(String::from_utf8_lossy(&data).trim().to_string())
             }
-            "description" => {
-                description = Some(String::from_utf8_lossy(&data).trim().to_string())
-            }
+            "description" => description = Some(String::from_utf8_lossy(&data).trim().to_string()),
             "readme_content" => {
                 readme_content = Some(String::from_utf8_lossy(&data).trim().to_string())
             }
@@ -464,14 +488,13 @@ pub async fn publish_version_handler(
         expected_sha256 = expected_sha256.or(metadata.content_sha256);
     }
 
-    let version_str = version_str.ok_or_else(|| {
-        RegistryError::Validation("Version field required".to_string())
-    })?;
+    let version_str = version_str
+        .ok_or_else(|| RegistryError::Validation("Version field required".to_string()))?;
 
     let semver_version = version_str.parse().map_err(RegistryError::Version)?;
-    let package_data = package_data.ok_or_else(|| {
-        RegistryError::Validation("Package file required".to_string())
-    })?;
+    let package_data = package_data
+        .ok_or_else(|| RegistryError::Validation("Package file required".to_string()))?;
+    validate_package_size(&package_data, state.config.max_package_size)?;
 
     // Compute hash
     let content_sha256 = compute_sha256(&package_data);
@@ -510,10 +533,7 @@ pub async fn publish_version_handler(
     Ok(Json(version.into()))
 }
 
-fn required_package_field(
-    field: &str,
-    value: Option<String>,
-) -> RegistryResult<String> {
+fn required_package_field(field: &str, value: Option<String>) -> RegistryResult<String> {
     value
         .filter(|value| !value.is_empty())
         .ok_or_else(|| RegistryError::Validation(format!("{field} field required")))
@@ -521,9 +541,20 @@ fn required_package_field(
 
 fn is_package_identifier(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+}
+
+fn validate_package_size(package_data: &[u8], max_package_size: usize) -> RegistryResult<()> {
+    if package_data.len() > max_package_size {
+        Err(RegistryError::Package(format!(
+            "Package is {} bytes; maximum allowed size is {max_package_size} bytes",
+            package_data.len()
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 async fn require_publish_access(
@@ -544,6 +575,32 @@ async fn require_publish_access(
     } else {
         Err(RegistryError::Auth(
             "Maintainer access required".to_string(),
+        ))
+    }
+}
+
+async fn require_read_access(
+    state: &AppState,
+    auth_user: &AuthUser,
+    org_id: uuid::Uuid,
+    visibility: &str,
+) -> RegistryResult<()> {
+    if auth_user.is_admin || visibility == "public" {
+        return Ok(());
+    }
+    let is_member = check_org_role(
+        state.db.pool(),
+        org_id,
+        auth_user.user_id,
+        crate::Role::Member,
+    )
+    .await
+    .unwrap_or(false);
+    if is_member {
+        Ok(())
+    } else {
+        Err(RegistryError::Auth(
+            "Organization membership required".to_string(),
         ))
     }
 }
@@ -609,9 +666,14 @@ pub async fn yank_version_handler(
     let version = get_harness_version(state.db.pool(), harness.id, &version).await?;
 
     // Check permissions
-    let can_yank = check_org_role(state.db.pool(), org.id, auth_user.user_id, crate::Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_yank = check_org_role(
+        state.db.pool(),
+        org.id,
+        auth_user.user_id,
+        crate::Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     if !auth_user.is_admin && !can_yank {
         return Err(RegistryError::Auth(
@@ -635,9 +697,14 @@ pub async fn unyank_version_handler(
     let version = get_harness_version(state.db.pool(), harness.id, &version).await?;
 
     // Check permissions
-    let can_unyank = check_org_role(state.db.pool(), org.id, auth_user.user_id, crate::Role::Maintainer)
-        .await
-        .unwrap_or(false);
+    let can_unyank = check_org_role(
+        state.db.pool(),
+        org.id,
+        auth_user.user_id,
+        crate::Role::Maintainer,
+    )
+    .await
+    .unwrap_or(false);
 
     if !auth_user.is_admin && !can_unyank {
         return Err(RegistryError::Auth(
@@ -653,10 +720,12 @@ pub async fn unyank_version_handler(
 /// Download version
 pub async fn download_version_handler(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path((org_name, harness_name, version_str)): Path<(String, String, String)>,
 ) -> RegistryResult<Response> {
     let org = get_org_by_name(state.db.pool(), &org_name).await?;
     let harness = get_harness_by_org_and_name(state.db.pool(), org.id, &harness_name).await?;
+    require_read_access(&state, &auth_user, org.id, &harness.visibility).await?;
     let version = get_harness_version(state.db.pool(), harness.id, &version_str).await?;
 
     let storage = create_storage(&state.config.storage)?;
@@ -699,10 +768,7 @@ fn validate_package_manifest(
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
-        if path
-            .file_name()
-            .is_some_and(|file_name| file_name == "craft.toml")
-        {
+        if path.as_ref() == std::path::Path::new("craft.toml") {
             let mut contents = String::new();
             entry.read_to_string(&mut contents)?;
             manifest_contents = Some(contents);
@@ -730,4 +796,75 @@ fn validate_package_manifest(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use tar::Builder;
+
+    const MANIFEST: &str = r#"[harness]
+name = "test-harness"
+version = "1.2.3"
+description = "Registry package test"
+authors = ["CRAFT"]
+
+[model]
+min_context = 4096
+recommended = ["test-model"]
+
+[prompts]
+system = "prompts/system.md"
+
+[memory]
+schema = "memory/schema.toml"
+
+[tools]
+mcp = "tools/mcp.toml"
+
+[validators]
+tdd = "validators/checks.tdd"
+"#;
+
+    fn package_with_manifest(path: &str) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(MANIFEST.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, path, MANIFEST.as_bytes())
+            .unwrap_or_else(|err| panic!("{err}"));
+        archive
+            .into_inner()
+            .unwrap_or_else(|err| panic!("{err}"))
+            .finish()
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    #[test]
+    fn package_manifest_must_match_published_coordinate() {
+        let package = package_with_manifest("craft.toml");
+        validate_package_manifest(&package, "test-harness", "1.2.3")
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        let error = validate_package_manifest(&package, "other-harness", "1.2.3").unwrap_err();
+        assert!(error.to_string().contains("does not match route harness"));
+    }
+
+    #[test]
+    fn package_manifest_must_be_at_archive_root() {
+        let package = package_with_manifest("nested/craft.toml");
+        let error = validate_package_manifest(&package, "test-harness", "1.2.3").unwrap_err();
+        assert!(error.to_string().contains("must include a craft.toml"));
+    }
+
+    #[test]
+    fn package_size_limit_is_enforced() {
+        validate_package_size(&[0; 4], 4).unwrap_or_else(|err| panic!("{err}"));
+        let error = validate_package_size(&[0; 5], 4).unwrap_err();
+        assert!(error.to_string().contains("maximum allowed size"));
+    }
 }

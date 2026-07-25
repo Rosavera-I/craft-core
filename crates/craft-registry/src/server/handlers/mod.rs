@@ -1,29 +1,24 @@
 //! Request handlers for the CRAFT Registry API
 
-use axum::{
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    Json,
-};
+use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
-    auth::{hash_password, verify_password, AuthUser, Claims},
-    db::*,
+    auth::{AuthUser, Claims, hash_password, verify_password},
+    db::{User, create_user, get_user_by_username, update_user_last_login},
     error::{RegistryError, RegistryResult},
-    server::{AppState, PaginationParams},
-    Role, Visibility,
+    server::AppState,
 };
 
-mod harness;
 mod device;
+mod harness;
 mod org;
 mod team;
 mod token;
 
-pub use harness::*;
 pub use device::*;
+pub use harness::*;
 pub use org::*;
 pub use team::*;
 pub use token::*;
@@ -52,6 +47,18 @@ pub struct UserResponse {
     pub is_admin: bool,
 }
 
+impl From<User> for UserResponse {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id.to_string(),
+            username: user.username,
+            email: user.email,
+            display_name: user.display_name,
+            is_admin: user.is_admin,
+        }
+    }
+}
+
 /// Registration request
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
@@ -77,9 +84,10 @@ pub async fn login(
     };
 
     // Verify password
-    let password_hash = user.password_hash.as_ref().ok_or_else(|| {
-        RegistryError::Auth("User has no password set".to_string())
-    })?;
+    let password_hash = user
+        .password_hash
+        .as_ref()
+        .ok_or_else(|| RegistryError::Auth("User has no password set".to_string()))?;
 
     if !verify_password(&req.password, password_hash)? {
         return Err(RegistryError::Auth(
@@ -138,23 +146,3 @@ pub async fn get_current_user(auth_user: AuthUser) -> RegistryResult<Json<UserRe
         is_admin: auth_user.is_admin,
     }))
 }
-
-// Re-export handler functions
-pub use org::{
-    create_org_handler, delete_org_handler, get_org_handler, get_org_public, invite_org_member,
-    list_org_members_handler, list_public_orgs, list_user_orgs_handler, remove_org_member,
-    update_org_handler, update_org_member_role,
-};
-
-pub use team::{
-    create_team_handler, delete_team_handler, get_team_handler, invite_team_member,
-    list_team_members_handler, list_teams_handler, remove_team_member, update_team_handler,
-};
-
-pub use harness::{
-    create_harness_handler, delete_harness_handler, download_version_handler, get_harness_handler,
-    get_version_handler, list_harness_versions_handler, publish_package_handler, publish_version_handler,
-    search_harnesses, update_harness_handler, yank_version_handler, unyank_version_handler,
-};
-
-pub use token::{create_token, list_tokens, revoke_token};

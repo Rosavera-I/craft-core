@@ -1066,6 +1066,13 @@ version = "0.1.0"
 description = "A starter CRAFT expertise harness"
 authors = ["JMoak"]
 
+[package]
+license = "MIT"
+keywords = []
+
+[entrypoints]
+system = "prompts/system.md"
+
 [model]
 min_context = 4096
 recommended = ["llama3.1:8b", "qwen2.5:7b"]
@@ -1221,6 +1228,7 @@ fn harness_command(args: &[String]) -> Result<(), CliError> {
             }
             let registry = manager.registry()?;
             let harness = registry.uninstall(name, true)?;
+            remove_registry_lockfile_entry(Path::new(LOCKFILE_NAME), &harness)?;
             ui::success(format!("uninstalled {}", harness.name));
             Ok(())
         }
@@ -1278,18 +1286,22 @@ fn install_registry_harness(manager: &HarnessManager, source: &str) -> Result<()
         format!("resolved {org}/{name}@{}", version.version),
     );
 
-    let spinner = ui::spinner(format!("downloading {org}/{name}@{}", version.version));
-    let package = registry::block_on(registry.download_harness(&org, &name, &version.version))?;
-    let package_sha256 = sha256_hex(&package);
-    if package_sha256 != version.content_sha256 {
-        return Err(CliError::Runtime(format!(
-            "download checksum mismatch: expected {}, got {package_sha256}",
-            version.content_sha256
-        )));
-    }
-
     let home = CraftHome::from_env()?;
     home.ensure()?;
+    let cache_path = home
+        .package_cache_dir()
+        .join(format!("{}.tar.gz", version.content_sha256));
+    let spinner = ui::spinner(format!("fetching {org}/{name}@{}", version.version));
+    let package = match read_cached_package(&cache_path, &version.content_sha256)? {
+        Some(package) => package,
+        None => {
+            let package =
+                registry::block_on(registry.download_harness(&org, &name, &version.version))?;
+            verify_package_checksum(&package, &version.content_sha256, "download")?;
+            store_cached_package(&cache_path, &package)?;
+            package
+        }
+    };
     let target = home
         .harnesses_dir()
         .join(&org)
@@ -1446,6 +1458,68 @@ fn unpack_harness_archive(package: &[u8], target: &Path) -> Result<(), CliError>
         .map_err(|err| CliError::io(format!("failed to extract into {}", target.display()), err))
 }
 
+fn read_cached_package(path: &Path, expected_sha256: &str) -> Result<Option<Vec<u8>>, CliError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(path).map_err(|err| {
+        CliError::io(
+            format!("failed to read package cache {}", path.display()),
+            err,
+        )
+    })?;
+    if sha256_hex(&bytes) == expected_sha256 {
+        Ok(Some(bytes))
+    } else {
+        fs::remove_file(path).map_err(|err| {
+            CliError::io(
+                format!("failed to remove corrupt cache entry {}", path.display()),
+                err,
+            )
+        })?;
+        Ok(None)
+    }
+}
+
+fn store_cached_package(path: &Path, package: &[u8]) -> Result<(), CliError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| CliError::Runtime("invalid package cache path".to_string()))?;
+    fs::create_dir_all(parent)
+        .map_err(|err| CliError::io(format!("failed to create {}", parent.display()), err))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|err| {
+        CliError::io(
+            format!("failed to create cache entry in {}", parent.display()),
+            err,
+        )
+    })?;
+    use std::io::Write as _;
+    temp.write_all(package)
+        .map_err(|err| CliError::io("failed to write package cache", err))?;
+    temp.persist(path).map_err(|err| {
+        CliError::io(
+            format!("failed to persist package cache {}", path.display()),
+            err.error,
+        )
+    })?;
+    Ok(())
+}
+
+fn verify_package_checksum(
+    package: &[u8],
+    expected_sha256: &str,
+    operation: &str,
+) -> Result<(), CliError> {
+    let actual = sha256_hex(package);
+    if actual == expected_sha256 {
+        Ok(())
+    } else {
+        Err(CliError::Runtime(format!(
+            "{operation} checksum mismatch: expected {expected_sha256}, got {actual}"
+        )))
+    }
+}
+
 fn update_registry_lockfile(path: &Path, locked: LockedHarness) -> Result<(), CliError> {
     let mut lockfile = if path.exists() {
         let contents = fs::read_to_string(path)
@@ -1480,7 +1554,37 @@ fn update_registry_lockfile(path: &Path, locked: LockedHarness) -> Result<(), Cl
         .harness
         .sort_by(|left, right| (&left.org, &left.name).cmp(&(&right.org, &right.name)));
 
-    let contents = toml::to_string_pretty(&lockfile).map_err(|err| {
+    write_registry_lockfile(path, &lockfile)
+}
+
+fn remove_registry_lockfile_entry(
+    path: &Path,
+    installed: &InstalledHarness,
+) -> Result<(), CliError> {
+    if !path.exists() || !installed.source.starts_with("registry:") {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|err| CliError::io(format!("failed to read {}", path.display()), err))?;
+    let mut lockfile: HarnessLockfile = toml::from_str(&contents)
+        .map_err(|err| CliError::Runtime(format!("invalid {}: {err}", path.display())))?;
+    if lockfile.version != LOCKFILE_VERSION {
+        return Err(CliError::Runtime(format!(
+            "unsupported {} format version {}; expected {LOCKFILE_VERSION}",
+            path.display(),
+            lockfile.version
+        )));
+    }
+
+    let (org, name, _) = parse_registry_source(&installed.source)?;
+    lockfile.harness.retain(|entry| {
+        !(entry.org == org && entry.name == name && entry.version == installed.version)
+    });
+    write_registry_lockfile(path, &lockfile)
+}
+
+fn write_registry_lockfile(path: &Path, lockfile: &HarnessLockfile) -> Result<(), CliError> {
+    let contents = toml::to_string_pretty(lockfile).map_err(|err| {
         CliError::Runtime(format!("failed to serialize {}: {err}", path.display()))
     })?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -1995,5 +2099,53 @@ mod tests {
         assert_eq!(parsed.harness[0].org, "acme");
         assert_eq!(parsed.harness[1].version, "1.1.0");
         assert_eq!(parsed.harness[1].checksum, "checksum-1.1.0");
+    }
+
+    #[test]
+    fn package_cache_reuses_valid_content_and_discards_corruption() {
+        let directory = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let path = directory.path().join("package.tar.gz");
+        let package = b"package bytes";
+        let checksum = sha256_hex(package);
+
+        store_cached_package(&path, package).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            read_cached_package(&path, &checksum).unwrap_or_else(|err| panic!("{err}")),
+            Some(package.to_vec())
+        );
+
+        fs::write(&path, b"corrupt").unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            read_cached_package(&path, &checksum).unwrap_or_else(|err| panic!("{err}")),
+            None
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn registry_uninstall_removes_only_matching_lock_entry() {
+        let directory = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let path = directory.path().join(LOCKFILE_NAME);
+        update_registry_lockfile(&path, locked("acme", "designer", "1.0.0"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        update_registry_lockfile(&path, locked("acme", "architect", "2.0.0"))
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        remove_registry_lockfile_entry(
+            &path,
+            &InstalledHarness {
+                name: "designer".to_string(),
+                version: "1.0.0".to_string(),
+                source: "registry:acme/designer@1.0.0".to_string(),
+                path: directory.path().join("designer"),
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        let contents = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{err}"));
+        let parsed: HarnessLockfile =
+            toml::from_str(&contents).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(parsed.harness.len(), 1);
+        assert_eq!(parsed.harness[0].name, "architect");
     }
 }

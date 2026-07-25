@@ -351,49 +351,7 @@ impl CloudRegistry {
     ) -> RegistryResult<VersionResponse> {
         let mut versions = self.list_harness_versions(org, name).await?;
         versions.retain(|version| !version.is_yanked);
-        if versions.is_empty() {
-            return Err(RegistryError::NotFound(format!(
-                "no published versions found for {org}/{name}"
-            )));
-        }
-
-        if let Some(requirement) = requirement {
-            let req = semver::VersionReq::parse(requirement).map_err(|err| {
-                RegistryError::Validation(format!(
-                    "invalid version requirement `{requirement}`: {err}"
-                ))
-            })?;
-            versions
-                .into_iter()
-                .filter_map(|version| {
-                    semver::Version::parse(&version.version)
-                        .ok()
-                        .filter(|parsed| req.matches(parsed))
-                        .map(|parsed| (parsed, version))
-                })
-                .max_by(|left, right| left.0.cmp(&right.0))
-                .map(|(_, version)| version)
-                .ok_or_else(|| {
-                    RegistryError::NotFound(format!(
-                        "no version of {org}/{name} matches {requirement}"
-                    ))
-                })
-        } else {
-            versions
-                .into_iter()
-                .filter_map(|version| {
-                    semver::Version::parse(&version.version)
-                        .ok()
-                        .map(|parsed| (parsed, version))
-                })
-                .max_by(|left, right| left.0.cmp(&right.0))
-                .map(|(_, version)| version)
-                .ok_or_else(|| {
-                    RegistryError::NotFound(format!(
-                        "no valid semantic versions found for {org}/{name}"
-                    ))
-                })
-        }
+        select_version(versions, org, name, requirement)
     }
 
     pub async fn publish_harness(
@@ -439,6 +397,7 @@ impl CloudRegistry {
         description: Option<&str>,
         package: Vec<u8>,
     ) -> RegistryResult<VersionResponse> {
+        let content_sha256 = craft_registry::storage::compute_sha256(&package);
         let package_part = reqwest::multipart::Part::bytes(package)
             .file_name(format!("{org}-{name}-{version}.tar.gz"))
             .mime_str("application/gzip")
@@ -449,6 +408,7 @@ impl CloudRegistry {
             .text("org", org.to_string())
             .text("name", name.to_string())
             .text("version", version.to_string())
+            .text("content_sha256", content_sha256)
             .part("package", package_part);
         if let Some(description) = description {
             form = form.text("description", description.to_string());
@@ -476,6 +436,56 @@ impl CloudRegistry {
     }
 }
 
+fn select_version(
+    versions: Vec<VersionResponse>,
+    org: &str,
+    name: &str,
+    requirement: Option<&str>,
+) -> RegistryResult<VersionResponse> {
+    if versions.is_empty() {
+        return Err(RegistryError::NotFound(format!(
+            "no published versions found for {org}/{name}"
+        )));
+    }
+
+    let parsed = versions
+        .into_iter()
+        .filter_map(|version| {
+            semver::Version::parse(&version.version)
+                .ok()
+                .map(|parsed| (parsed, version))
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(requirement) = requirement {
+        let req = semver::VersionReq::parse(requirement).map_err(|err| {
+            RegistryError::Validation(format!(
+                "invalid version requirement `{requirement}`: {err}"
+            ))
+        })?;
+        parsed
+            .into_iter()
+            .filter(|(version, _)| req.matches(version))
+            .max_by(|left, right| left.0.cmp(&right.0))
+            .map(|(_, version)| version)
+            .ok_or_else(|| {
+                RegistryError::NotFound(format!("no version of {org}/{name} matches {requirement}"))
+            })
+    } else {
+        parsed
+            .iter()
+            .filter(|(version, _)| version.pre.is_empty())
+            .max_by(|left, right| left.0.cmp(&right.0))
+            .or_else(|| parsed.iter().max_by(|left, right| left.0.cmp(&right.0)))
+            .map(|(_, version)| version.clone())
+            .ok_or_else(|| {
+                RegistryError::NotFound(format!(
+                    "no valid semantic versions found for {org}/{name}"
+                ))
+            })
+    }
+}
+
 pub fn block_on<T>(
     future: impl std::future::Future<Output = RegistryResult<T>>,
 ) -> RegistryResult<T> {
@@ -493,4 +503,53 @@ fn path_segment(value: &str) -> RegistryResult<&str> {
         )));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version(value: &str) -> VersionResponse {
+        VersionResponse {
+            id: value.to_string(),
+            version: value.to_string(),
+            git_ref: None,
+            git_commit_sha: None,
+            description: None,
+            readme_content: None,
+            package_size_bytes: None,
+            content_sha256: format!("sha256-{value}"),
+            download_count: 0,
+            is_yanked: false,
+            yanked_reason: None,
+            published_by: None,
+            published_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn latest_version_prefers_stable_release() {
+        let selected = select_version(
+            vec![version("1.9.0"), version("2.0.0-beta.1"), version("1.10.0")],
+            "acme",
+            "designer",
+            None,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        assert_eq!(selected.version, "1.10.0");
+    }
+
+    #[test]
+    fn version_requirement_selects_highest_match() {
+        let selected = select_version(
+            vec![version("1.1.0"), version("1.4.0"), version("2.0.0")],
+            "acme",
+            "designer",
+            Some("^1.0"),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        assert_eq!(selected.version, "1.4.0");
+    }
 }

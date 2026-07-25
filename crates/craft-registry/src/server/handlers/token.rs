@@ -1,9 +1,9 @@
 //! Access token request handlers
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -52,11 +52,7 @@ pub async fn create_token(
     };
 
     // Parse scopes
-    let scopes: Vec<TokenScope> = req
-        .scopes
-        .iter()
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let scopes: Vec<TokenScope> = req.scopes.iter().filter_map(|s| s.parse().ok()).collect();
 
     let (plain_token, db_token) = auth_service
         .generate_access_token(auth_user.user_id, org_id, &req.name, scopes)
@@ -113,7 +109,7 @@ pub async fn revoke_token(
     auth_user: AuthUser,
     Path(token_id): Path<String>,
 ) -> RegistryResult<StatusCode> {
-    let id = token_id.parse().map_err(|_| {
+    let id: uuid::Uuid = token_id.parse().map_err(|_| {
         crate::error::RegistryError::Validation("Invalid token ID format".to_string())
     })?;
 

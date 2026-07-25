@@ -4,6 +4,32 @@ Composable Runtime for Agentic Framework Tooling.
 
 CRAFT is a Rust-native foundation for local-model expertise harnesses: reusable packages that bundle prompts, model requirements, memory shape, tools, and validators for a specific capability such as `godot-designer`, `java-programmer`, or `tdd-architect`.
 
+Published package manifests may also declare distribution metadata, dependencies,
+and named entry points:
+
+```toml
+[package]
+license = "MIT"
+repository = "https://github.com/acme/godot-designer"
+keywords = ["godot", "design"]
+
+[dependencies]
+"acme/tdd-architect" = "^1.2.0"
+
+[entrypoints]
+system = "prompts/system.md"
+```
+
+Dependency keys use registry `org/name` coordinates and values are semver
+requirements. Entry points are validated as package-relative files. Downloaded
+archives are checksum-verified and cached by SHA-256 under
+`CRAFT_HOME/cache/packages/`; installed versions remain isolated under
+`CRAFT_HOME/harnesses/<org>/<name>/<version>/`.
+
+Registry writes require organization maintainer membership (or a registry
+administrator). Reading internal or private packages requires organization
+membership; authenticated users may read public packages.
+
 ## Current Scope
 
 This repository currently provides:

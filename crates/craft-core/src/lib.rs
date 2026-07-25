@@ -67,12 +67,17 @@ impl CraftHome {
         self.root.join("harnesses")
     }
 
+    pub fn package_cache_dir(&self) -> PathBuf {
+        self.root.join("cache").join("packages")
+    }
+
     pub fn registry_path(&self) -> PathBuf {
         self.root.join("registry.sqlite3")
     }
 
     pub fn ensure(&self) -> Result<(), CraftError> {
         fs::create_dir_all(self.harnesses_dir())?;
+        fs::create_dir_all(self.package_cache_dir())?;
         Ok(())
     }
 }

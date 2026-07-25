@@ -4,12 +4,11 @@
 //! version control, and access token management.
 
 use axum::{
-    extract::{DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
-    middleware::{from_fn, from_fn_with_state},
+    Router,
+    extract::{DefaultBodyLimit, State},
+    middleware::from_fn_with_state,
     response::Json,
     routing::{delete, get, post, put},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -22,11 +21,11 @@ use tower_http::{
 };
 
 use crate::{
-    auth::{auth_middleware, optional_auth_middleware, AuthState, AuthUser, Claims, TokenScope},
-    db::*,
-    error::{RegistryError, RegistryResult},
+    RegistryConfig,
+    auth::{AuthState, auth_middleware},
+    db::Database,
+    error::RegistryResult,
     server::handlers::*,
-    Database, RegistryConfig, Visibility,
 };
 
 mod handlers;
@@ -58,10 +57,9 @@ impl Server {
         });
 
         if config.simple_auth_enabled {
-            if let Some(bootstrap) =
-                crate::auth::ApiKeyAuthenticator::new(state.db.clone())
-                    .bootstrap_admin(&config)
-                    .await?
+            if let Some(bootstrap) = crate::auth::ApiKeyAuthenticator::new(state.db.clone())
+                .bootstrap_admin(&config)
+                .await?
             {
                 tracing::warn!(
                     username = %bootstrap.username,
@@ -134,29 +132,71 @@ impl Server {
             .route("/api/v1/orgs/:name", delete(delete_org_handler))
             .route("/api/v1/orgs/:name/members", get(list_org_members_handler))
             .route("/api/v1/orgs/:name/invites", post(invite_org_member))
-            .route("/api/v1/orgs/:name/members/:user_id", put(update_org_member_role))
-            .route("/api/v1/orgs/:name/members/:user_id", delete(remove_org_member))
+            .route(
+                "/api/v1/orgs/:name/members/:user_id",
+                put(update_org_member_role),
+            )
+            .route(
+                "/api/v1/orgs/:name/members/:user_id",
+                delete(remove_org_member),
+            )
             .route("/api/v1/orgs/:name/teams", get(list_teams_handler))
             .route("/api/v1/orgs/:name/teams", post(create_team_handler))
             // Team routes
             .route("/api/v1/orgs/:name/teams/:team_name", get(get_team_handler))
-            .route("/api/v1/orgs/:name/teams/:team_name", put(update_team_handler))
-            .route("/api/v1/orgs/:name/teams/:team_name", delete(delete_team_handler))
-            .route("/api/v1/orgs/:name/teams/:team_name/members", get(list_team_members_handler))
-            .route("/api/v1/orgs/:name/teams/:team_name/members", post(invite_team_member))
-            .route("/api/v1/orgs/:name/teams/:team_name/members/:user_id", delete(remove_team_member))
+            .route(
+                "/api/v1/orgs/:name/teams/:team_name",
+                put(update_team_handler),
+            )
+            .route(
+                "/api/v1/orgs/:name/teams/:team_name",
+                delete(delete_team_handler),
+            )
+            .route(
+                "/api/v1/orgs/:name/teams/:team_name/members",
+                get(list_team_members_handler),
+            )
+            .route(
+                "/api/v1/orgs/:name/teams/:team_name/members",
+                post(invite_team_member),
+            )
+            .route(
+                "/api/v1/orgs/:name/teams/:team_name/members/:user_id",
+                delete(remove_team_member),
+            )
             // Harness routes
             .route("/api/v1/packages", post(publish_package_handler))
             .route("/api/v1/harnesses/:org", post(create_harness_handler))
             .route("/api/v1/harnesses/:org/:name", get(get_harness_handler))
             .route("/api/v1/harnesses/:org/:name", put(update_harness_handler))
-            .route("/api/v1/harnesses/:org/:name", delete(delete_harness_handler))
-            .route("/api/v1/harnesses/:org/:name/versions", get(list_harness_versions_handler))
-            .route("/api/v1/harnesses/:org/:name/versions", post(publish_version_handler))
-            .route("/api/v1/harnesses/:org/:name/versions/:version", get(get_version_handler))
-            .route("/api/v1/harnesses/:org/:name/versions/:version/yank", post(yank_version_handler))
-            .route("/api/v1/harnesses/:org/:name/versions/:version/unyank", post(unyank_version_handler))
-            .route("/api/v1/harnesses/:org/:name/download/:version", get(download_version_handler));
+            .route(
+                "/api/v1/harnesses/:org/:name",
+                delete(delete_harness_handler),
+            )
+            .route(
+                "/api/v1/harnesses/:org/:name/versions",
+                get(list_harness_versions_handler),
+            )
+            .route(
+                "/api/v1/harnesses/:org/:name/versions",
+                post(publish_version_handler),
+            )
+            .route(
+                "/api/v1/harnesses/:org/:name/versions/:version",
+                get(get_version_handler),
+            )
+            .route(
+                "/api/v1/harnesses/:org/:name/versions/:version/yank",
+                post(yank_version_handler),
+            )
+            .route(
+                "/api/v1/harnesses/:org/:name/versions/:version/unyank",
+                post(unyank_version_handler),
+            )
+            .route(
+                "/api/v1/harnesses/:org/:name/download/:version",
+                get(download_version_handler),
+            );
 
         // Combine routes
         Router::new()
@@ -165,9 +205,9 @@ impl Server {
             .layer(
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
-                    .layer(cors)
                     .layer(CompressionLayer::new())
                     .layer(RequestBodyLimitLayer::new(config.max_package_size))
+                    .layer(cors)
                     .layer(DefaultBodyLimit::max(config.max_package_size)),
             )
             .with_state(state)
